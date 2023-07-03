@@ -27,7 +27,7 @@ pub trait NovaShape<G: Group> {
   /// Return an appropriate `R1CSShape` and `CommitmentKey` structs.
   fn r1cs_shape(&self) -> (R1CSShape<G>, CommitmentKey<G>);
   /// Return an appropriate `R1CSShape` without `CommitmentKey` structs.
-  fn r1cs_shape_supernova(&self) -> (R1CSShape<G>);
+  fn r1cs_shape_supernova(&self) -> R1CSShape<G>;
 }
 
 impl<G: Group> NovaWitness<G> for SatisfyingAssignment<G>
@@ -89,7 +89,7 @@ where
 
     (S, ck)
   }
-  fn r1cs_shape_supernova(&self) -> (R1CSShape<G>) {
+  fn r1cs_shape_supernova(&self) -> R1CSShape<G> {
     let mut A: Vec<(usize, usize, G::Scalar)> = Vec::new();
     let mut B: Vec<(usize, usize, G::Scalar)> = Vec::new();
     let mut C: Vec<(usize, usize, G::Scalar)> = Vec::new();
@@ -110,10 +110,6 @@ where
         &constraint.2,
       );
     }
-
-    println!("num_constraints: {:?}", num_constraints);
-    println!("num_vars: {:?}", num_vars);
-    println!("num_inputs - 1: {:?}", num_inputs - 1);
 
     assert_eq!(num_cons_added, num_constraints);
 
