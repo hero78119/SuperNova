@@ -140,6 +140,7 @@ impl<G: Group> R1CSShape<G> {
     z: &[G::Scalar],
   ) -> Result<(Vec<G::Scalar>, Vec<G::Scalar>, Vec<G::Scalar>), NovaError> {
     if z.len() != self.num_io + self.num_vars + 1 {
+      panic!("invalid witness");
       return Err(NovaError::InvalidWitnessLength);
     }
 
@@ -437,6 +438,7 @@ impl<G: Group> RelaxedR1CSWitness<G> {
     let W2 = &W2.W;
 
     if W1.len() != W2.len() {
+      panic!("invalid witness");
       return Err(NovaError::InvalidWitnessLength);
     }
 
