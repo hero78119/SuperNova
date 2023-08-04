@@ -110,10 +110,6 @@ impl<Scalar: PrimeField + PrimeFieldBits> StepCircuit<Scalar> for Sha256Circuit<
 
     Ok(z_out)
   }
-
-  fn output(&self, _z: &[Scalar]) -> Vec<Scalar> {
-    vec![self.digest]
-  }
 }
 
 type C1 = Sha256Circuit<<G1 as Group>::Scalar>;

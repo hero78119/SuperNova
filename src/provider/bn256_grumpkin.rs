@@ -59,7 +59,7 @@ macro_rules! impl_traits {
       type CompressedGroupElement = $name_compressed;
       type PreprocessedGroupElement = $name::Affine;
       type RO = PoseidonRO<Self::Base, Self::Scalar>;
-      type ROCircuit = PoseidonROCircuit<Self::Base>;
+      type ROCircuit= PoseidonROCircuit<Self::Base>;
       type TE = Keccak256Transcript<Self>;
       type CE = CommitmentEngine<Self>;
 
