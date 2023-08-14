@@ -73,7 +73,7 @@ harness = false
 required-features = ["supernova"]
 
 [features]
-default = []
+default = ["supernova"]
 # Compiles in portable mode, w/o ISA extensions => binary can be executed on all systems.
 portable = ["pasta-msm/portable"]
 cuda = ["neptune/cuda", "neptune/pasta", "neptune/arity24"]

@@ -63,7 +63,7 @@ fn bench_one_augmented_circuit_recursive_snark(c: &mut Criterion) {
       G2,
       NonTrivialTestCircuit<<G1 as Group>::Scalar>,
       TrivialTestCircuit<<G2 as Group>::Scalar>,
-    >::new(0, c_primary, c_secondary.clone(), 1);
+    >::new(0, 0, c_primary, c_secondary.clone(), 2, 1);
 
     let (r1cs_shape_primary, r1cs_shape_secondary) = running_claim1.get_r1cs_shape();
     let ck_primary = gen_commitmentkey_by_r1cs(r1cs_shape_primary);
@@ -94,7 +94,7 @@ fn bench_one_augmented_circuit_recursive_snark(c: &mut Criterion) {
           &running_claim1,
           digest,
           program_counter,
-          0,
+          2,
           1,
           &z0_primary,
           &z0_secondary,
@@ -171,7 +171,7 @@ fn bench_two_augmented_circuit_recursive_snark(c: &mut Criterion) {
       G2,
       NonTrivialTestCircuit<<G1 as Group>::Scalar>,
       TrivialTestCircuit<<G2 as Group>::Scalar>,
-    >::new(0, c_primary.clone(), c_secondary.clone(), 2);
+    >::new(0, 0, c_primary.clone(), c_secondary.clone(), 2, 1);
 
     // Structuring running claims
     let mut running_claim2 = RunningClaim::<
@@ -179,7 +179,7 @@ fn bench_two_augmented_circuit_recursive_snark(c: &mut Criterion) {
       G2,
       NonTrivialTestCircuit<<G1 as Group>::Scalar>,
       TrivialTestCircuit<<G2 as Group>::Scalar>,
-    >::new(1, c_primary, c_secondary.clone(), 2);
+    >::new(1, 0, c_primary, c_secondary.clone(), 2, 1);
 
     let (r1cs_shape_primary, r1cs_shape_secondary) = running_claim1.get_r1cs_shape();
     let ck_primary = gen_commitmentkey_by_r1cs(r1cs_shape_primary);

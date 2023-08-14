@@ -32,6 +32,9 @@ use circuit::{
   SuperNovaAugmentedCircuit, SuperNovaAugmentedCircuitInputs, SuperNovaAugmentedCircuitParams,
 };
 
+#[cfg(test)]
+mod test;
+
 /// A type that holds public parameters of Nova
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -65,7 +68,8 @@ where
   pub fn setup_without_commitkey<C1: StepCircuit<G1::Scalar>, C2: StepCircuit<G2::Scalar>>(
     c_primary: &C1,
     c_secondary: &C2,
-    num_augmented_circuits: usize,
+    num_primary_augmented_circuits: usize,
+    num_secondary_augmented_circuits: usize,
   ) -> Self where {
     let augmented_circuit_params_primary =
       SuperNovaAugmentedCircuitParams::new(BN_LIMB_WIDTH, BN_N_LIMBS, true);
@@ -88,7 +92,7 @@ where
       None,
       c_primary,
       ro_consts_circuit_primary.clone(),
-      num_augmented_circuits,
+      num_secondary_augmented_circuits,
     );
     let mut cs: ShapeCS<G1> = ShapeCS::new();
     let _ = circuit_primary.synthesize(&mut cs);
@@ -107,7 +111,7 @@ where
       None,
       c_secondary,
       ro_consts_circuit_secondary.clone(),
-      num_augmented_circuits,
+      num_primary_augmented_circuits,
     );
     let mut cs: ShapeCS<G2> = ShapeCS::new();
     let _ = circuit_secondary.synthesize(&mut cs);
@@ -166,7 +170,8 @@ where
   Cb: StepCircuit<G2::Scalar>,
 {
   _phantom: PhantomData<G1>,
-  augmented_circuit_index: usize,
+  primary_augmented_circuit_index: usize,
+  secondary_augmented_circuit_index: usize,
   c_primary: Ca,
   c_secondary: Cb,
   params: PublicParams<G1, G2>,
@@ -181,31 +186,36 @@ where
 {
   /// new a running claim
   pub fn new(
-    augmented_circuit_index: usize,
+    primary_augmented_circuit_index: usize,
+    secondary_augmented_circuit_index: usize,
     circuit_primary: Ca,
     circuit_secondary: Cb,
-    num_augmented_circuits: usize,
+    num_primary_augmented_circuits: usize,
+    num_secondary_augmented_circuits: usize,
   ) -> Self {
-    let claim = circuit_primary;
-
     let pp = PublicParams::<G1, G2>::setup_without_commitkey(
-      &claim,
+      &circuit_primary,
       &circuit_secondary,
-      num_augmented_circuits,
+      num_primary_augmented_circuits,
+      num_secondary_augmented_circuits,
     );
 
     Self {
-      augmented_circuit_index,
+      primary_augmented_circuit_index,
+      secondary_augmented_circuit_index,
       _phantom: PhantomData,
-      c_primary: claim,
+      c_primary: circuit_primary,
       c_secondary: circuit_secondary,
       params: pp,
     }
   }
 
   /// get augmented_circuit_index
-  pub fn get_augmented_circuit_index(&self) -> usize {
-    self.augmented_circuit_index
+  pub fn get_augmented_circuit_index(&self) -> (usize, usize) {
+    (
+      self.primary_augmented_circuit_index,
+      self.secondary_augmented_circuit_index,
+    )
   }
 
   /// set primary/secondary commitment key
@@ -242,8 +252,8 @@ where
 {
   r_W_primary: Vec<Option<RelaxedR1CSWitness<G1>>>,
   r_U_primary: Vec<Option<RelaxedR1CSInstance<G1>>>,
-  r_W_secondary: Vec<Option<RelaxedR1CSWitness<G2>>>, // usually r_W_secondary.len() == 1
-  r_U_secondary: Vec<Option<RelaxedR1CSInstance<G2>>>, // usually r_U_secondary.len() == 1
+  r_W_secondary: Vec<Option<RelaxedR1CSWitness<G2>>>,
+  r_U_secondary: Vec<Option<RelaxedR1CSInstance<G2>>>,
   l_w_secondary: R1CSWitness<G2>,
   l_u_secondary: R1CSInstance<G2>,
   pp_digest: G1::Scalar,
@@ -251,8 +261,12 @@ where
   zi_primary: Vec<G1::Scalar>,
   zi_secondary: Vec<G2::Scalar>,
   program_counter: G1::Scalar,
-  augmented_circuit_index: usize,
-  num_augmented_circuits: usize,
+  num_primary_augmented_circuits: usize,
+  // for verify current recursivesnark secondary circuit running instance folded on primary circuit
+  secondary_augmented_circuit_index_cur: usize,
+  // for folding next secondary circuit running instance on primary circuit
+  secondary_augmented_circuit_index_next: usize,
+  num_secondary_augmented_circuits: usize,
 }
 
 impl<G1, G2> RecursiveSNARK<G1, G2>
@@ -265,8 +279,8 @@ where
     claim: &RunningClaim<G1, G2, C1, C2>,
     pp_digest: G1::Scalar,
     initial_program_counter: G1::Scalar,
-    first_augmented_circuit_index: usize,
-    num_augmented_circuits: usize,
+    num_primary_augmented_circuits: usize,
+    num_secondary_augmented_circuits: usize,
     z0_primary: &[G1::Scalar],
     z0_secondary: &[G2::Scalar],
   ) -> Result<Self, NovaError> {
@@ -301,7 +315,7 @@ where
       Some(inputs_primary),
       c_primary,
       pp.ro_consts_circuit_primary.clone(),
-      num_augmented_circuits,
+      num_secondary_augmented_circuits,
     );
 
     let (zi_primary_pc_next, zi_primary) = circuit_primary
@@ -326,24 +340,30 @@ where
         Some(&u_primary),
         None,
         G2::Scalar::ZERO, // secondary circuit never constrain/bump program counter
-        G2::Scalar::from(claim.augmented_circuit_index as u64),
+        G2::Scalar::from(claim.primary_augmented_circuit_index as u64),
       );
     let circuit_secondary: SuperNovaAugmentedCircuit<'_, G1, C2> = SuperNovaAugmentedCircuit::new(
       &pp.augmented_circuit_params_secondary,
       Some(inputs_secondary),
       c_secondary,
       pp.ro_consts_circuit_secondary.clone(),
-      num_augmented_circuits,
+      num_primary_augmented_circuits,
     );
     let (_, zi_secondary) = circuit_secondary
       .synthesize(&mut cs_secondary)
-      .map_err(|_| NovaError::SynthesisError)?;
+      .map_err(|err| {
+        debug!("err {:?}", err);
+        NovaError::SynthesisError
+      })?;
     if zi_secondary.len() != pp.F_arity_secondary {
       return Err(NovaError::InvalidStepOutputLength);
     }
     let (u_secondary, w_secondary) = cs_secondary
       .r1cs_instance_and_witness(&pp.r1cs_shape_secondary, ck_secondary)
-      .map_err(|_| NovaError::UnSat)?;
+      .map_err(|err| {
+        debug!("err {:?}", err);
+        NovaError::SynthesisError
+      })?;
 
     // IVC proof for the primary circuit
     let l_w_primary = w_primary;
@@ -356,13 +376,6 @@ where
     // IVC proof of the secondary circuit
     let l_w_secondary = w_secondary;
     let l_u_secondary = u_secondary;
-    let r_W_secondary = vec![Some(RelaxedR1CSWitness::<G2>::default(
-      &pp.r1cs_shape_secondary,
-    ))];
-    let r_U_secondary = vec![Some(RelaxedR1CSInstance::default(
-      ck_secondary,
-      &pp.r1cs_shape_secondary,
-    ))];
 
     // Outputs of the two circuits and next program counter thus far.
     let zi_primary = zi_primary
@@ -378,19 +391,34 @@ where
       .collect::<Result<Vec<<G2 as Group>::Scalar>, NovaError>>()?;
 
     // handle the base case by initialize U_next in next round
-    let r_W_primary_initial_list = (0..num_augmented_circuits)
-      .map(|i| (i == first_augmented_circuit_index).then(|| r_W_primary.clone()))
-      .collect::<Vec<Option<RelaxedR1CSWitness<G1>>>>();
+    let (primary_augmented_circuit_index, secondary_augmented_circuit_index) =
+      claim.get_augmented_circuit_index();
 
-    let r_U_primary_initial_list = (0..num_augmented_circuits)
-      .map(|i| (i == first_augmented_circuit_index).then(|| r_U_primary.clone()))
+    let r_W_secondary_initial_list = (0..num_secondary_augmented_circuits)
+      .map(|i| {
+        (i == secondary_augmented_circuit_index)
+          .then(|| RelaxedR1CSWitness::default(&pp.r1cs_shape_secondary))
+      })
+      .collect::<Vec<Option<RelaxedR1CSWitness<G2>>>>();
+    let r_U_secondary_initial_list = (0..num_secondary_augmented_circuits)
+      .map(|i| {
+        (i == secondary_augmented_circuit_index)
+          .then(|| RelaxedR1CSInstance::default(ck_secondary, &pp.r1cs_shape_secondary))
+      })
+      .collect::<Vec<Option<RelaxedR1CSInstance<G2>>>>();
+
+    let r_W_primary_initial_list = (0..num_primary_augmented_circuits)
+      .map(|i| (i == primary_augmented_circuit_index).then(|| r_W_primary.clone()))
+      .collect::<Vec<Option<RelaxedR1CSWitness<G1>>>>();
+    let r_U_primary_initial_list = (0..num_primary_augmented_circuits)
+      .map(|i| (i == primary_augmented_circuit_index).then(|| r_U_primary.clone()))
       .collect::<Vec<Option<RelaxedR1CSInstance<G1>>>>();
 
     Ok(Self {
       r_W_primary: r_W_primary_initial_list,
       r_U_primary: r_U_primary_initial_list,
-      r_W_secondary,
-      r_U_secondary,
+      r_W_secondary: r_W_secondary_initial_list,
+      r_U_secondary: r_U_secondary_initial_list,
       l_w_secondary,
       l_u_secondary,
       pp_digest,
@@ -398,8 +426,10 @@ where
       zi_primary,
       zi_secondary,
       program_counter: zi_primary_pc_next,
-      augmented_circuit_index: first_augmented_circuit_index,
-      num_augmented_circuits,
+      num_primary_augmented_circuits,
+      secondary_augmented_circuit_index_cur: secondary_augmented_circuit_index,
+      secondary_augmented_circuit_index_next: secondary_augmented_circuit_index,
+      num_secondary_augmented_circuits,
     })
   }
   /// executing a step of the incremental computation
@@ -413,10 +443,6 @@ where
     if self.i == 0 {
       self.i = 1;
       return Ok(());
-    }
-
-    if self.r_U_secondary.len() != 1 || self.r_W_secondary.len() != 1 {
-      return Err(NovaError::ProofVerifyError);
     }
 
     let pp = &claim.params;
@@ -433,11 +459,15 @@ where
     // fold the secondary circuit's instance
     let (nifs_secondary, (r_U_secondary_folded, r_W_secondary_folded)) = NIFS::prove(
       ck_secondary,
-      &pp.ro_consts_secondary,
+      &pp.ro_consts_secondary, // TODO need to fix this part for diverse secondary circuit
       &scalar_as_base::<G1>(self.pp_digest),
-      &pp.r1cs_shape_secondary,
-      self.r_U_secondary[0].as_ref().unwrap(),
-      self.r_W_secondary[0].as_ref().unwrap(),
+      &pp.r1cs_shape_secondary, // TODO need to fix this part for diverse secondary circuit
+      self.r_U_secondary[self.secondary_augmented_circuit_index_next]
+        .as_ref()
+        .unwrap(),
+      self.r_W_secondary[self.secondary_augmented_circuit_index_next]
+        .as_ref()
+        .unwrap(),
       &self.l_u_secondary,
       &self.l_w_secondary,
     )?;
@@ -458,7 +488,7 @@ where
         Some(&self.l_u_secondary),
         Some(&T),
         self.program_counter,
-        G1::Scalar::ZERO,
+        G1::Scalar::from(self.secondary_augmented_circuit_index_next as u64),
       );
 
     let circuit_primary: SuperNovaAugmentedCircuit<'_, G2, C1> = SuperNovaAugmentedCircuit::new(
@@ -466,7 +496,7 @@ where
       Some(inputs_primary),
       c_primary,
       pp.ro_consts_circuit_primary.clone(),
-      self.num_augmented_circuits,
+      self.num_secondary_augmented_circuits,
     );
 
     let (zi_primary_pc_next, zi_primary) = circuit_primary
@@ -482,9 +512,11 @@ where
 
     // Split into `if let`/`else` statement
     // to avoid `returns a value referencing data owned by closure` error on `&RelaxedR1CSInstance::default` and `RelaxedR1CSWitness::default`
+    let (primary_augmented_circuit_index, secondary_augmented_circuit_index) =
+      claim.get_augmented_circuit_index();
     let (nifs_primary, (r_U_primary_folded, r_W_primary_folded)) = match (
-      self.r_U_primary.get(claim.get_augmented_circuit_index()),
-      self.r_W_primary.get(claim.get_augmented_circuit_index()),
+      self.r_U_primary.get(primary_augmented_circuit_index),
+      self.r_W_primary.get(primary_augmented_circuit_index),
     ) {
       (Some(Some(r_U_primary)), Some(Some(r_W_primary))) => NIFS::prove(
         ck_primary,
@@ -520,7 +552,7 @@ where
         Some(&l_u_primary),
         Some(&binding),
         G2::Scalar::ZERO, // secondary circuit never constrain/bump program counter
-        G2::Scalar::from(claim.get_augmented_circuit_index() as u64),
+        G2::Scalar::from(primary_augmented_circuit_index as u64),
       );
 
     let circuit_secondary: SuperNovaAugmentedCircuit<'_, G1, C2> = SuperNovaAugmentedCircuit::new(
@@ -528,7 +560,7 @@ where
       Some(inputs_secondary),
       c_secondary,
       pp.ro_consts_circuit_secondary.clone(),
-      self.num_augmented_circuits,
+      self.num_primary_augmented_circuits,
     );
     let (_, zi_secondary) = circuit_secondary
       .synthesize(&mut cs_secondary)
@@ -558,18 +590,31 @@ where
       return Err(NovaError::InvalidStepOutputLength);
     }
 
+    // set running instance of secondary circuit at this moment because we know the shape, if it's None
+    if self.r_W_secondary[secondary_augmented_circuit_index].is_none() {
+      self.r_W_secondary[secondary_augmented_circuit_index] =
+        Some(RelaxedR1CSWitness::default(&pp.r1cs_shape_secondary))
+    }
+    if self.r_U_secondary[secondary_augmented_circuit_index].is_none() {
+      self.r_U_secondary[secondary_augmented_circuit_index] = Some(RelaxedR1CSInstance::default(
+        ck_secondary,
+        &pp.r1cs_shape_secondary,
+      ));
+    }
+
     // clone and updated running instance on respective circuit_index
-    self.r_U_primary[claim.get_augmented_circuit_index()] = Some(r_U_primary_folded);
-    self.r_W_primary[claim.get_augmented_circuit_index()] = Some(r_W_primary_folded);
-    self.r_W_secondary = vec![Some(r_W_secondary_next)];
-    self.r_U_secondary = vec![Some(r_U_secondary_next)];
+    self.r_U_primary[primary_augmented_circuit_index] = Some(r_U_primary_folded);
+    self.r_W_primary[primary_augmented_circuit_index] = Some(r_W_primary_folded);
+    self.r_W_secondary[self.secondary_augmented_circuit_index_next] = Some(r_W_secondary_next);
+    self.r_U_secondary[self.secondary_augmented_circuit_index_next] = Some(r_U_secondary_next);
     self.l_w_secondary = l_w_secondary_next;
     self.l_u_secondary = l_u_secondary_next;
     self.i += 1;
     self.zi_primary = zi_primary;
     self.zi_secondary = zi_secondary;
     self.program_counter = zi_primary_pc_next;
-    self.augmented_circuit_index = claim.get_augmented_circuit_index();
+    self.secondary_augmented_circuit_index_cur = self.secondary_augmented_circuit_index_next;
+    self.secondary_augmented_circuit_index_next = secondary_augmented_circuit_index;
     Ok(())
   }
 
@@ -591,14 +636,12 @@ where
       return Err(NovaError::ProofVerifyError);
     }
 
-    if self.r_U_secondary.len() != 1 || self.r_W_secondary.len() != 1 {
-      return Err(NovaError::ProofVerifyError);
-    }
-
     let pp = &claim.params;
     let ck_primary = pp.ck_primary.as_ref().ok_or(NovaError::MissingCK)?;
+    let ck_secondary = pp.ck_secondary.as_ref().ok_or(NovaError::MissingCK)?;
 
-    self.r_U_primary[claim.get_augmented_circuit_index()]
+    let (primary_augmented_circuit_index, _) = claim.get_augmented_circuit_index();
+    self.r_U_primary[primary_augmented_circuit_index]
       .as_ref()
       .map_or(Ok(()), |U| {
         if U.X.len() != 2 {
@@ -609,26 +652,31 @@ where
         }
       })?;
 
-    self.r_U_secondary[0].as_ref().map_or(Ok(()), |U| {
-      if U.X.len() != 2 {
-        debug!(
-          "r_U_secondary got instance length {:?} != {:?}",
-          U.X.len(),
-          2
-        );
-        Err(NovaError::ProofVerifyError)
-      } else {
-        Ok(())
-      }
-    })?;
+    self.r_U_secondary[self.secondary_augmented_circuit_index_cur]
+      .as_ref()
+      .map_or(Ok(()), |U| {
+        if U.X.len() != 2 {
+          debug!(
+            "r_U_secondary got instance length {:?} != {:?}",
+            U.X.len(),
+            2
+          );
+          Err(NovaError::ProofVerifyError)
+        } else {
+          Ok(())
+        }
+      })?;
 
     // check if the output hashes in R1CS instances point to the right running instances
+    // primary circuit
     let num_field_primary_ro = 3 // params_next, i_new, program_counter_new
     + 2 * pp.F_arity_primary // zo, z1
-    + (7 + 2 * pp.augmented_circuit_params_primary.get_n_limbs()); // # 1 * (7 + [X0, X1]*#num_limb)
-    let num_field_secondary_ro = 3 // params_next, i_new, program_counter_new
+    + self.num_secondary_augmented_circuits * (7 + 2 * pp.augmented_circuit_params_primary.get_n_limbs()); // # 1 * (7 + [X0, X1]*#num_limb)
+
+    // secondary circuit
+    let num_field_secondary_ro = 2 // params_next, i_new
     + 2 * pp.F_arity_primary // zo, z1
-    + self.num_augmented_circuits * (7 + 2 * pp.augmented_circuit_params_primary.get_n_limbs()); // #num_augmented_circuits * (7 + [X0, X1]*#num_limb)
+    + self.num_primary_augmented_circuits * (7 + 2 * pp.augmented_circuit_params_primary.get_n_limbs()); // #num_augmented_circuits * (7 + [X0, X1]*#num_limb)
 
     let (hash_primary, hash_secondary) = {
       let mut hasher = <G2 as Group>::RO::new(pp.ro_consts_secondary.clone(), num_field_primary_ro);
@@ -642,15 +690,18 @@ where
       for e in &self.zi_primary {
         hasher.absorb(*e);
       }
-      if let Some(U) = self.r_U_secondary[0].as_ref() {
-        U.absorb_in_ro(&mut hasher)
-      }
+      let default_value = RelaxedR1CSInstance::default(ck_secondary, &pp.r1cs_shape_secondary);
+      self.r_U_secondary.iter().for_each(|U| {
+        U.as_ref()
+          .unwrap_or(&default_value)
+          .absorb_in_ro(&mut hasher);
+      });
 
       let mut hasher2 =
         <G1 as Group>::RO::new(pp.ro_consts_primary.clone(), num_field_secondary_ro);
       hasher2.absorb(scalar_as_base::<G1>(self.pp_digest));
       hasher2.absorb(G2::Scalar::from(self.i as u64));
-      hasher2.absorb(G2::Scalar::ZERO);
+
       for e in z0_secondary {
         hasher2.absorb(*e);
       }
@@ -692,10 +743,10 @@ where
       || {
         pp.r1cs_shape_primary.is_sat_relaxed(
           pp.ck_primary.as_ref().unwrap(),
-          self.r_U_primary[claim.get_augmented_circuit_index()]
+          self.r_U_primary[primary_augmented_circuit_index]
             .as_ref()
             .unwrap_or(&default_instance),
-          self.r_W_primary[claim.get_augmented_circuit_index()]
+          self.r_W_primary[primary_augmented_circuit_index]
             .as_ref()
             .unwrap_or(&default_witness),
         )
@@ -705,8 +756,12 @@ where
           || {
             pp.r1cs_shape_secondary.is_sat_relaxed(
               pp.ck_secondary.as_ref().unwrap(),
-              self.r_U_secondary[0].as_ref().unwrap(),
-              self.r_W_secondary[0].as_ref().unwrap(),
+              self.r_U_secondary[self.secondary_augmented_circuit_index_cur]
+                .as_ref()
+                .unwrap(),
+              self.r_W_secondary[self.secondary_augmented_circuit_index_cur]
+                .as_ref()
+                .unwrap(),
             )
           },
           || {
@@ -760,419 +815,4 @@ where
 /// genenate commitmentkey by r1cs shape
 pub fn gen_commitmentkey_by_r1cs<G: Group>(shape: &R1CSShape<G>) -> CommitmentKey<G> {
   R1CS::<G>::commitment_key(shape)
-}
-
-#[cfg(test)]
-mod tests {
-  use crate::gadgets::utils::alloc_const;
-  use crate::gadgets::utils::alloc_num_equals;
-  use crate::gadgets::utils::conditionally_select;
-  use crate::traits::circuit_supernova::TrivialTestCircuit;
-  use crate::{
-    compute_digest,
-    gadgets::utils::{add_allocated_num, alloc_one, alloc_zero},
-  };
-  use bellperson::gadgets::boolean::Boolean;
-  use bellperson::LinearCombination;
-  use core::marker::PhantomData;
-  use ff::Field;
-  use ff::PrimeField;
-
-  use super::*;
-
-  use ::bellperson::{gadgets::num::AllocatedNum, ConstraintSystem, SynthesisError};
-
-  fn constraint_augmented_circuit_index<F: PrimeField, CS: ConstraintSystem<F>>(
-    mut cs: CS,
-    pc_counter: &AllocatedNum<F>,
-    rom: &[AllocatedNum<F>],
-    circuit_index: &AllocatedNum<F>,
-  ) -> Result<(), SynthesisError> {
-    // select target when index match or empty
-    let zero = alloc_zero(cs.namespace(|| "zero"))?;
-    let rom_values = rom
-      .iter()
-      .enumerate()
-      .map(|(i, rom_value)| {
-        let index_alloc = alloc_const(
-          cs.namespace(|| format!("rom_values {} index ", i)),
-          F::from(i as u64),
-        )?;
-        let equal_bit = Boolean::from(alloc_num_equals(
-          cs.namespace(|| format!("rom_values {} equal bit", i)),
-          &index_alloc,
-          pc_counter,
-        )?);
-        conditionally_select(
-          cs.namespace(|| format!("rom_values {} conditionally_select ", i)),
-          rom_value,
-          &zero,
-          &equal_bit,
-        )
-      })
-      .collect::<Result<Vec<AllocatedNum<F>>, SynthesisError>>()?;
-
-    let sum_lc = rom_values
-      .iter()
-      .fold(LinearCombination::<F>::zero(), |acc_lc, row_value| {
-        acc_lc + row_value.get_variable()
-      });
-
-    cs.enforce(
-      || "sum_lc == circuit_index",
-      |lc| lc + circuit_index.get_variable() - &sum_lc,
-      |lc| lc + CS::one(),
-      |lc| lc,
-    );
-
-    Ok(())
-  }
-
-  #[derive(Clone, Debug, Default)]
-  struct CubicCircuit<F: PrimeField> {
-    _p: PhantomData<F>,
-    circuit_index: usize,
-    rom_size: usize,
-  }
-
-  impl<F> CubicCircuit<F>
-  where
-    F: PrimeField,
-  {
-    fn new(circuit_index: usize, rom_size: usize) -> Self {
-      CubicCircuit {
-        circuit_index,
-        rom_size,
-        _p: PhantomData,
-      }
-    }
-  }
-
-  impl<F> StepCircuit<F> for CubicCircuit<F>
-  where
-    F: PrimeField,
-  {
-    fn arity(&self) -> usize {
-      1 + self.rom_size // value + rom[].len()
-    }
-
-    fn synthesize<CS: ConstraintSystem<F>>(
-      &self,
-      cs: &mut CS,
-      pc_counter: &AllocatedNum<F>,
-      z: &[AllocatedNum<F>],
-    ) -> Result<(AllocatedNum<F>, Vec<AllocatedNum<F>>), SynthesisError> {
-      // constrain rom[pc] equal to `self.circuit_index`
-      let circuit_index = alloc_const(
-        cs.namespace(|| "circuit_index"),
-        F::from(self.circuit_index as u64),
-      )?;
-      constraint_augmented_circuit_index(
-        cs.namespace(|| "CubicCircuit agumented circuit constraint"),
-        pc_counter,
-        &z[1..],
-        &circuit_index,
-      )?;
-
-      let one = alloc_one(cs.namespace(|| "alloc one"))?;
-      let pc_next = add_allocated_num(
-        // pc = pc + 1
-        cs.namespace(|| "pc = pc + 1".to_string()),
-        pc_counter,
-        &one,
-      )?;
-
-      // Consider a cubic equation: `x^3 + x + 5 = y`, where `x` and `y` are respectively the input and output.
-      let x = &z[0];
-      let x_sq = x.square(cs.namespace(|| "x_sq"))?;
-      let x_cu = x_sq.mul(cs.namespace(|| "x_cu"), x)?;
-      let y = AllocatedNum::alloc(cs.namespace(|| "y"), || {
-        Ok(x_cu.get_value().unwrap() + x.get_value().unwrap() + F::from(5u64))
-      })?;
-
-      cs.enforce(
-        || "y = x^3 + x + 5",
-        |lc| {
-          lc + x_cu.get_variable()
-            + x.get_variable()
-            + CS::one()
-            + CS::one()
-            + CS::one()
-            + CS::one()
-            + CS::one()
-        },
-        |lc| lc + CS::one(),
-        |lc| lc + y.get_variable(),
-      );
-
-      let mut z_next = vec![y];
-      z_next.extend(z[1..].iter().cloned());
-      Ok((pc_next, z_next))
-    }
-  }
-
-  #[derive(Clone, Debug, Default)]
-  struct SquareCircuit<F: PrimeField> {
-    _p: PhantomData<F>,
-    circuit_index: usize,
-    rom_size: usize,
-  }
-
-  impl<F> SquareCircuit<F>
-  where
-    F: PrimeField,
-  {
-    fn new(circuit_index: usize, rom_size: usize) -> Self {
-      SquareCircuit {
-        circuit_index,
-        rom_size,
-        _p: PhantomData,
-      }
-    }
-  }
-
-  impl<F> StepCircuit<F> for SquareCircuit<F>
-  where
-    F: PrimeField,
-  {
-    fn arity(&self) -> usize {
-      1 + self.rom_size // value + rom[].len()
-    }
-
-    fn synthesize<CS: ConstraintSystem<F>>(
-      &self,
-      cs: &mut CS,
-      pc_counter: &AllocatedNum<F>,
-      z: &[AllocatedNum<F>],
-    ) -> Result<(AllocatedNum<F>, Vec<AllocatedNum<F>>), SynthesisError> {
-      // constrain rom[pc] equal to `self.circuit_index`
-      let circuit_index = alloc_const(
-        cs.namespace(|| "circuit_index"),
-        F::from(self.circuit_index as u64),
-      )?;
-      constraint_augmented_circuit_index(
-        cs.namespace(|| "SquareCircuit agumented circuit constraint"),
-        pc_counter,
-        &z[1..],
-        &circuit_index,
-      )?;
-      let one = alloc_one(cs.namespace(|| "alloc one"))?;
-      let pc_next = add_allocated_num(
-        // pc = pc + 1
-        cs.namespace(|| "pc = pc + 1"),
-        pc_counter,
-        &one,
-      )?;
-
-      // Consider an equation: `x^2 + x + 5 = y`, where `x` and `y` are respectively the input and output.
-      let x = &z[0];
-      let x_sq = x.square(cs.namespace(|| "x_sq"))?;
-      let y = AllocatedNum::alloc(cs.namespace(|| "y"), || {
-        Ok(x_sq.get_value().unwrap() + x.get_value().unwrap() + F::from(5u64))
-      })?;
-
-      cs.enforce(
-        || "y = x^2 + x + 5",
-        |lc| {
-          lc + x_sq.get_variable()
-            + x.get_variable()
-            + CS::one()
-            + CS::one()
-            + CS::one()
-            + CS::one()
-            + CS::one()
-        },
-        |lc| lc + CS::one(),
-        |lc| lc + y.get_variable(),
-      );
-
-      let mut z_next = vec![y];
-      z_next.extend(z[1..].iter().cloned());
-      Ok((pc_next, z_next))
-    }
-  }
-
-  const OPCODE_0: usize = 0;
-  const OPCODE_1: usize = 1;
-  fn test_trivial_nivc_with<G1, G2>()
-  where
-    G1: Group<Base = <G2 as Group>::Scalar>,
-    G2: Group<Base = <G1 as Group>::Scalar>,
-  {
-    // Here demo a simple RAM machine
-    // - with 2 argumented circuit
-    // - each argumented circuit contains primary and secondary circuit
-    // - a memory commmitment via a public IO `rom` (like a program) to constraint the sequence execution
-
-    // This test also ready to add more argumented circuit and ROM can be arbitrary length
-
-    // ROM is for constraints the sequence of execution order for opcode
-    // program counter initially point to 0
-
-    // TODO: replace with memory commitment along with suggestion from Supernova 4.4 optimisations
-
-    // This is mostly done with the existing Nova code. With additions of U_i[] and program_counter checks
-    // in the augmented circuit.
-
-    // To save the test time, after each step of iteration, RecursiveSNARK just verfiy the latest U_i[augmented_circuit_index] needs to be a satisfying instance.
-    // TODO At the end of this test, RecursiveSNARK need to verify all U_i[] are satisfying instances
-
-    let rom = [
-      OPCODE_1, OPCODE_1, OPCODE_0, OPCODE_0, OPCODE_1, OPCODE_1, OPCODE_0, OPCODE_0, OPCODE_1,
-      OPCODE_1,
-    ]; // Rom can be arbitrary length.
-    let circuit_secondary = TrivialTestCircuit::new(rom.len());
-    let num_augmented_circuit = 2;
-
-    // Structuring running claims
-    let test_circuit1 = CubicCircuit::new(OPCODE_0, rom.len());
-    let mut running_claim1 = RunningClaim::<
-      G1,
-      G2,
-      CubicCircuit<<G1 as Group>::Scalar>,
-      TrivialTestCircuit<<G2 as Group>::Scalar>,
-    >::new(
-      OPCODE_0,
-      test_circuit1,
-      circuit_secondary.clone(),
-      num_augmented_circuit,
-    );
-
-    let test_circuit2 = SquareCircuit::new(OPCODE_1, rom.len());
-    let mut running_claim2 = RunningClaim::<
-      G1,
-      G2,
-      SquareCircuit<<G1 as Group>::Scalar>,
-      TrivialTestCircuit<<G2 as Group>::Scalar>,
-    >::new(
-      OPCODE_1,
-      test_circuit2,
-      circuit_secondary,
-      num_augmented_circuit,
-    );
-
-    // generate the commitkey based on max num of constraints and reused it for all other augmented circuit
-    let circuit_public_params = vec![&running_claim1.params, &running_claim2.params];
-    let (max_index_circuit, _) = circuit_public_params
-      .iter()
-      .enumerate()
-      .map(|(i, params)| -> (usize, usize) { (i, params.r1cs_shape_primary.num_cons) })
-      .max_by(|(_, circuit_size1), (_, circuit_size2)| circuit_size1.cmp(circuit_size2))
-      .unwrap();
-
-    let ck_primary =
-      gen_commitmentkey_by_r1cs(&circuit_public_params[max_index_circuit].r1cs_shape_primary);
-    let ck_secondary =
-      gen_commitmentkey_by_r1cs(&circuit_public_params[max_index_circuit].r1cs_shape_secondary);
-
-    // set unified ck_primary, ck_secondary and update digest
-    running_claim1.params.ck_primary = Some(ck_primary.clone());
-    running_claim1.params.ck_secondary = Some(ck_secondary.clone());
-
-    running_claim2.params.ck_primary = Some(ck_primary);
-    running_claim2.params.ck_secondary = Some(ck_secondary);
-
-    let digest = compute_digest::<G1, PublicParams<G1, G2>>(&[
-      running_claim1.get_publicparams(),
-      running_claim2.get_publicparams(),
-    ]);
-
-    let num_steps = rom.len();
-    let initial_program_counter = <G1 as Group>::Scalar::from(0);
-
-    // extend z0_primary/secondary with rom content
-    let mut z0_primary = vec![<G1 as Group>::Scalar::ONE];
-    z0_primary.extend(
-      rom
-        .iter()
-        .map(|opcode| <G1 as Group>::Scalar::from(*opcode as u64)),
-    );
-    let mut z0_secondary = vec![<G2 as Group>::Scalar::ONE];
-    z0_secondary.extend(
-      rom
-        .iter()
-        .map(|opcode| <G2 as Group>::Scalar::from(*opcode as u64)),
-    );
-
-    let mut recursive_snark_option: Option<RecursiveSNARK<G1, G2>> = None;
-
-    for _ in 0..num_steps {
-      let program_counter = recursive_snark_option
-        .as_ref()
-        .map(|recursive_snark| recursive_snark.program_counter)
-        .unwrap_or_else(|| initial_program_counter);
-      let augmented_circuit_index = rom[u32::from_le_bytes(
-        // convert program counter from field to usize (only took le 4 bytes)
-        program_counter.to_repr().as_ref()[0..4].try_into().unwrap(),
-      ) as usize];
-
-      let mut recursive_snark = recursive_snark_option.unwrap_or_else(|| {
-        if augmented_circuit_index == OPCODE_0 {
-          RecursiveSNARK::iter_base_step(
-            &running_claim1,
-            digest,
-            program_counter,
-            augmented_circuit_index,
-            num_augmented_circuit,
-            &z0_primary,
-            &z0_secondary,
-          )
-          .unwrap()
-        } else if augmented_circuit_index == OPCODE_1 {
-          RecursiveSNARK::iter_base_step(
-            &running_claim2,
-            digest,
-            program_counter,
-            augmented_circuit_index,
-            num_augmented_circuit,
-            &z0_primary,
-            &z0_secondary,
-          )
-          .unwrap()
-        } else {
-          unimplemented!()
-        }
-      });
-
-      if augmented_circuit_index == OPCODE_0 {
-        let _ = recursive_snark
-          .prove_step(&running_claim1, &z0_primary, &z0_secondary)
-          .unwrap();
-        let _ = recursive_snark
-          .verify(&running_claim1, &z0_primary, &z0_secondary)
-          .unwrap();
-      } else if augmented_circuit_index == OPCODE_1 {
-        let _ = recursive_snark
-          .prove_step(&running_claim2, &z0_primary, &z0_secondary)
-          .unwrap();
-        let _ = recursive_snark
-          .verify(&running_claim2, &z0_primary, &z0_secondary)
-          .unwrap();
-      }
-      recursive_snark_option = Some(recursive_snark)
-    }
-
-    assert!(recursive_snark_option.is_some());
-
-    // Now you can handle the Result using if let
-    let RecursiveSNARK {
-      zi_primary,
-      zi_secondary,
-      program_counter,
-      ..
-    } = &recursive_snark_option.unwrap();
-
-    println!("zi_primary: {:?}", zi_primary);
-    println!("zi_secondary: {:?}", zi_secondary);
-    println!("final program_counter: {:?}", program_counter);
-  }
-
-  #[test]
-  fn test_trivial_nivc() {
-    type G1 = pasta_curves::pallas::Point;
-    type G2 = pasta_curves::vesta::Point;
-
-    //Expirementing with selecting the running claims for nifs
-    test_trivial_nivc_with::<G1, G2>();
-  }
 }
