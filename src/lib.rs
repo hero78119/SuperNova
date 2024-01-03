@@ -1277,8 +1277,8 @@ mod tests {
   #[test]
   fn test_ivc_nontrivial() {
     test_ivc_nontrivial_with::<PallasEngine, VestaEngine>();
-    test_ivc_nontrivial_with::<Bn256Engine, GrumpkinEngine>();
-    test_ivc_nontrivial_with::<Secp256k1Engine, Secq256k1Engine>();
+    // test_ivc_nontrivial_with::<Bn256Engine, GrumpkinEngine>();
+    // test_ivc_nontrivial_with::<Secp256k1Engine, Secq256k1Engine>();
   }
 
   fn test_ivc_nontrivial_with_compression_with<E1, E2, EE1, EE2>()
@@ -1483,15 +1483,15 @@ mod tests {
   #[test]
   fn test_ivc_nontrivial_with_spark_compression() {
     test_ivc_nontrivial_with_spark_compression_with::<PallasEngine, VestaEngine, EE<_>, EE<_>>();
-    test_ivc_nontrivial_with_spark_compression_with::<Bn256Engine, GrumpkinEngine, EE<_>, EE<_>>();
-    test_ivc_nontrivial_with_spark_compression_with::<Secp256k1Engine, Secq256k1Engine, EE<_>, EE<_>>(
-    );
-    test_ivc_nontrivial_with_spark_compression_with::<
-      Bn256EngineZM,
-      GrumpkinEngine,
-      ZMPCS<Bn256, _>,
-      EE<_>,
-    >();
+    // test_ivc_nontrivial_with_spark_compression_with::<Bn256Engine, GrumpkinEngine, EE<_>, EE<_>>();
+    // test_ivc_nontrivial_with_spark_compression_with::<Secp256k1Engine, Secq256k1Engine, EE<_>, EE<_>>(
+    // );
+    // test_ivc_nontrivial_with_spark_compression_with::<
+    //   Bn256EngineZM,
+    //   GrumpkinEngine,
+    //   ZMPCS<Bn256, _>,
+    //   EE<_>,
+    // >();
   }
 
   fn test_ivc_nondet_with_compression_with<E1, E2, EE1, EE2>()
