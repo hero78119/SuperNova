@@ -6,9 +6,50 @@ use crate::spartan::polys::{
   eq::EqPolynomial, masked_eq::MaskedEqPolynomial, multilinear::MultilinearPolynomial,
   power::PowPolynomial,
 };
+use crate::spartan::powers;
 use crate::spartan::sumcheck::SumcheckProof;
 use crate::traits::commitment::CommitmentEngineTrait;
 use crate::{Commitment, CommitmentKey, Engine, NovaError};
+use std::marker::PhantomData;
+
+// Define a iterator over Natural number without allocated a whole size vector
+// it started from 0 instead of 1
+pub(in crate::spartan) struct NaturalNumVec<E: Engine> {
+  curr: u64,
+  size: u64,
+  _phatom: PhantomData<E>,
+}
+impl<E: Engine> NaturalNumVec<E> {
+  pub fn new(size: u64) -> Self {
+    NaturalNumVec {
+      curr: 0,
+      size,
+      _phatom: PhantomData,
+    }
+  }
+}
+
+impl<E: Engine> Iterator for NaturalNumVec<E> {
+  // We can refer to this type using Self::Item
+  type Item = E::Scalar;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    let next = if self.curr < self.size {
+      Some(E::Scalar::from(self.curr))
+    } else {
+      None
+    };
+    self.curr += 1;
+    next
+  }
+}
+
+impl<E: Engine> ExactSizeIterator for NaturalNumVec<E> {
+  // We can easily calculate the remaining number of iterations.
+  fn len(&self) -> usize {
+    (self.size - self.curr).try_into().unwrap()
+  }
+}
 
 /// Defines a trait for implementing sum-check in a generic manner
 pub trait SumcheckEngine<E: Engine>: Send + Sync {
@@ -109,6 +150,307 @@ impl<E: Engine> SumcheckEngine<E> for WitnessBoundSumcheck<E> {
   }
 }
 
+pub(in crate::spartan) struct MemorySumcheckInstanceV2<E: Engine> {
+  w_plus_r: MultilinearPolynomial<E::Scalar>,
+  t_plus_r: MultilinearPolynomial<E::Scalar>,
+  w_plus_r_inv: MultilinearPolynomial<E::Scalar>,
+  t_plus_r_inv: MultilinearPolynomial<E::Scalar>,
+  ts: MultilinearPolynomial<E::Scalar>,
+
+  // eq
+  poly_eq: MultilinearPolynomial<E::Scalar>,
+
+  // zero polynomial
+  poly_zero: MultilinearPolynomial<E::Scalar>,
+}
+
+impl<E: Engine> MemorySumcheckInstanceV2<E> {
+  /// Computes witnesses for MemoryInstanceSumcheck
+  ///
+  /// # Description
+  /// We use the logUp protocol to prove that
+  /// ∑ TS[i]/(T[i] + r) - 1/(W[i] + r) = 0
+  /// where
+  ///   T[i] = mem[i]      * gamma + i
+  ///            = eq(tau)[i]      * gamma + i
+  ///   W[i] = L_row[i]        * gamma + addr[i]
+  ///            = eq(tau)[row[i]] * gamma + addr[i]
+  /// and
+  ///   TS are integer-valued vectors representing the number of reads
+  ///   to each memory cell of L
+  ///
+
+  /// The function returns oracles for the polynomials TS[i]/(T[i] + r), 1/(W[i] + r),
+  /// as well as auxiliary polynomials T[i] + r, W[i] + r
+  // such that caller pass vector of iterators with respective to T and W part
+  // and this function will return the oracle version of it
+  pub fn compute_oracles<'a>(
+    ck: &CommitmentKey<E>,
+    r: &E::Scalar,
+    gamma: &E::Scalar,
+    t_sets: Vec<Box<dyn ExactSizeIterator<Item = E::Scalar> + Sync + Send + 'a>>,
+    w_sets: Vec<Box<dyn ExactSizeIterator<Item = E::Scalar> + Sync + Send + 'a>>,
+    ts: &Vec<E::Scalar>,
+  ) -> Result<
+    (
+      Vec<<<E as Engine>::CE as CommitmentEngineTrait<E>>::Commitment>,
+      Vec<Vec<E::Scalar>>,
+      Vec<Vec<E::Scalar>>,
+    ),
+    NovaError,
+  > {
+    // get power of gamma
+    let hash_func_vec = |vectors:&mut Vec<Box<dyn ExactSizeIterator<Item=E::Scalar> + Sync + Send>>, vector_len: usize| // this is initial write set value
+     -> Result<Vec<E::Scalar>, NovaError> {
+      assert!(vectors.len() > 0);
+      let power_of_gamma = powers::<E>(gamma, vector_len);
+      let hash_func = |values: Vec<E::Scalar>| -> E::Scalar {
+        values.into_iter().zip(power_of_gamma.iter()).map(|(value, gamma)| value * *gamma).sum()
+      };
+      (0..vectors[0].len()).map(move |_| {
+        let values = vectors.iter_mut().map(|iterator| iterator.next().ok_or(NovaError::OddInputLength)).collect::<Result<Vec<_>, _>>()?;
+        let value = hash_func(values);
+        Ok(value)
+      }).collect::<Result<Vec<_>, _>>()
+    };
+
+    let vector_len = t_sets.len();
+    // support multiple vector
+    let t_w_sets = [(t_sets, w_sets)]
+      .into_iter()
+      .map(|(mut t_sets, mut w_sets)| {
+        let (a, b) = rayon::join(
+          || hash_func_vec(&mut t_sets, vector_len),
+          || hash_func_vec(&mut w_sets, vector_len),
+        );
+        a.and_then(|a| Ok((a, b?)))
+      })
+      .collect::<Result<Vec<(Vec<<E as Engine>::Scalar>, Vec<<E as Engine>::Scalar>)>, NovaError>>(
+      )?;
+
+    let batch_invert = |v: &[E::Scalar]| -> Result<Vec<E::Scalar>, NovaError> {
+      let mut products = vec![E::Scalar::ZERO; v.len()];
+      let mut acc = E::Scalar::ONE;
+
+      for i in 0..v.len() {
+        products[i] = acc;
+        acc *= v[i];
+      }
+
+      // we can compute an inversion only if acc is non-zero
+      if acc == E::Scalar::ZERO {
+        return Err(NovaError::InternalError);
+      }
+
+      // compute the inverse once for all entries
+      acc = acc.invert().unwrap();
+
+      let mut inv = vec![E::Scalar::ZERO; v.len()];
+      for i in 0..v.len() {
+        let tmp = acc * v[v.len() - 1 - i];
+        inv[v.len() - 1 - i] = products[v.len() - 1 - i] * acc;
+        acc = tmp;
+      }
+
+      Ok(inv)
+    };
+
+    // compute vectors TS[i]/(T[i] + r) and 1/(W[i] + r)
+    let helper = |T: &[E::Scalar],
+                  W: &[E::Scalar],
+                  TS: &[E::Scalar],
+                  r: &E::Scalar|
+     -> (
+      (
+        Result<Vec<E::Scalar>, NovaError>, // T inv
+        Result<Vec<E::Scalar>, NovaError>, // W inv
+      ),
+      (
+        Result<Vec<E::Scalar>, NovaError>, // T
+        Result<Vec<E::Scalar>, NovaError>, // W
+      ),
+    ) {
+      rayon::join(
+        || {
+          rayon::join(
+            || {
+              let inv = batch_invert(&T.par_iter().map(|e| *e + *r).collect::<Vec<E::Scalar>>())?;
+
+              // compute inv[i] * TS[i] in parallel
+              Ok(
+                zip_with!((inv.into_par_iter(), TS.into_par_iter()), |e1, e2| e1 * *e2)
+                  .collect::<Vec<_>>(),
+              )
+            },
+            || batch_invert(&W.par_iter().map(|e| *e + *r).collect::<Vec<E::Scalar>>()),
+          )
+        },
+        || {
+          rayon::join(
+            || Ok(T.par_iter().map(|e| *e + *r).collect::<Vec<E::Scalar>>()),
+            || Ok(W.par_iter().map(|e| *e + *r).collect::<Vec<E::Scalar>>()),
+          )
+        },
+      )
+    };
+
+    // let t_plus_r_polys = zip_with!(
+    //   (t_w_sets.par_iter(), [mem_unit].par_iter()),
+    //   |tw_set, mem_unit| {
+    //     let (T, W): (Vec<<E as Engine>::Scalar>, Vec<<E as Engine>::Scalar>) = tw_set;
+    //     helper(&T, &W, mem_unit.ts, r)
+    //   }
+    // )
+    // .collect::<Vec<((_, _), (_, _))>>();
+
+    let polys = t_w_sets
+      .par_iter()
+      .map(|tw_set| {
+        let (T, W) = tw_set;
+        let ((t_inv, w_inv), (t, w)) = helper(&T, &W, &ts, r);
+        t_inv.and_then(|t_inv| Ok(((t_inv, w_inv?), (t?, w?))))
+      })
+      .collect::<Result<Vec<((_, _), (_, _))>, NovaError>>()?;
+
+    let (tw_plus_r_invs, tw_plus_rs): (
+      Vec<(Vec<E::Scalar>, Vec<E::Scalar>)>,
+      Vec<(Vec<E::Scalar>, Vec<E::Scalar>)>,
+    ) = polys.into_iter().unzip();
+    let poly_vec = tw_plus_r_invs
+      .into_iter()
+      .flat_map(|tw_plus_r_inv| vec![tw_plus_r_inv.0, tw_plus_r_inv.1])
+      .collect::<Vec<Vec<E::Scalar>>>();
+    let aux_poly_vec = tw_plus_rs
+      .into_iter()
+      .flat_map(|tw_plus_r| vec![tw_plus_r.0, tw_plus_r.1])
+      .collect::<Vec<Vec<E::Scalar>>>();
+
+    let comm_vec = poly_vec
+      .par_iter()
+      .map(|vec_scalar| E::CE::commit(ck, vec_scalar))
+      .collect();
+
+    Ok((comm_vec, poly_vec, aux_poly_vec))
+  }
+
+  pub fn new(
+    polys_oracle: [Vec<E::Scalar>; 2],
+    polys_aux: [Vec<E::Scalar>; 2],
+    poly_eq: Vec<E::Scalar>,
+    ts_row: Vec<E::Scalar>,
+  ) -> Self {
+    let [t_plus_r_inv, w_plus_r_inv] = polys_oracle;
+    let [t_plus_r, w_plus_r] = polys_aux;
+
+    let zero = vec![E::Scalar::ZERO; poly_eq.len()];
+
+    Self {
+      t_plus_r: MultilinearPolynomial::new(t_plus_r),
+      w_plus_r: MultilinearPolynomial::new(w_plus_r),
+      t_plus_r_inv: MultilinearPolynomial::new(t_plus_r_inv),
+      w_plus_r_inv: MultilinearPolynomial::new(w_plus_r_inv),
+      ts: MultilinearPolynomial::new(ts_row),
+      poly_eq: MultilinearPolynomial::new(poly_eq),
+      poly_zero: MultilinearPolynomial::new(zero),
+    }
+  }
+}
+
+impl<E: Engine> SumcheckEngine<E> for MemorySumcheckInstanceV2<E> {
+  fn initial_claims(&self) -> Vec<E::Scalar> {
+    vec![E::Scalar::ZERO; 3]
+  }
+
+  fn degree(&self) -> usize {
+    3
+  }
+
+  fn size(&self) -> usize {
+    // sanity checks
+    assert_eq!(self.t_plus_r.len(), self.w_plus_r.len());
+    assert_eq!(self.w_plus_r.len(), self.ts.len());
+
+    self.w_plus_r.len()
+  }
+
+  fn evaluation_points(&self) -> Vec<Vec<E::Scalar>> {
+    let comb_func = |poly_A_comp: &E::Scalar,
+                     poly_B_comp: &E::Scalar,
+                     _poly_C_comp: &E::Scalar|
+     -> E::Scalar { *poly_A_comp - *poly_B_comp };
+
+    let comb_func2 =
+      |poly_A_comp: &E::Scalar,
+       poly_B_comp: &E::Scalar,
+       poly_C_comp: &E::Scalar,
+       _poly_D_comp: &E::Scalar|
+       -> E::Scalar { *poly_A_comp * (*poly_B_comp * *poly_C_comp - E::Scalar::ONE) };
+
+    let comb_func3 =
+      |poly_A_comp: &E::Scalar,
+       poly_B_comp: &E::Scalar,
+       poly_C_comp: &E::Scalar,
+       poly_D_comp: &E::Scalar|
+       -> E::Scalar { *poly_A_comp * (*poly_B_comp * *poly_C_comp - *poly_D_comp) };
+
+    // inv related evaluation points
+    // 0 = ∑ TS[i]/(T[i] + r) - 1/(W[i] + r)
+    let (eval_inv_0, eval_inv_2, eval_inv_3) = SumcheckProof::<E>::compute_eval_points_cubic(
+      &self.t_plus_r_inv,
+      &self.w_plus_r_inv,
+      &self.poly_zero,
+      &comb_func,
+    );
+
+    // evaluation points
+    // 0 = ∑ eq[i] * (inv_T[i] * (T[i] + r) - TS[i]))
+    let (eval_T_0, eval_T_2, eval_T_3) =
+      SumcheckProof::<E>::compute_eval_points_cubic_with_additive_term(
+        &self.poly_eq,
+        &self.t_plus_r_inv,
+        &self.t_plus_r,
+        &self.ts,
+        &comb_func3,
+      );
+    // 0 = ∑ eq[i] * (inv_W[i] * (W[i] + r) - 1))
+    let (eval_W_0, eval_W_2, eval_W_3) =
+      SumcheckProof::<E>::compute_eval_points_cubic_with_additive_term(
+        &self.poly_eq,
+        &self.w_plus_r_inv,
+        &self.w_plus_r,
+        &self.poly_zero,
+        &comb_func2,
+      );
+
+    vec![
+      vec![eval_inv_0, eval_inv_2, eval_inv_3],
+      vec![eval_T_0, eval_T_2, eval_T_3],
+      vec![eval_W_0, eval_W_2, eval_W_3],
+    ]
+  }
+
+  fn bound(&mut self, r: &E::Scalar) {
+    [
+      &mut self.t_plus_r,
+      &mut self.t_plus_r_inv,
+      &mut self.w_plus_r,
+      &mut self.w_plus_r_inv,
+      &mut self.ts,
+      &mut self.poly_eq,
+    ]
+    .par_iter_mut()
+    .for_each(|poly| poly.bind_poly_var_top(r));
+  }
+
+  fn final_claims(&self) -> Vec<Vec<E::Scalar>> {
+    let poly_row_final = vec![self.t_plus_r_inv[0], self.w_plus_r_inv[0], self.ts[0]];
+
+    vec![poly_row_final]
+  }
+}
+
+/// TODO refactor batched_ppsnark.rs to use MemorySumcheckInstanceV2, so this can be removed entirely
+// #[deprecated(note = "MemorySumcheckInstanceV2 instead")]
 pub(in crate::spartan) struct MemorySumcheckInstance<E: Engine> {
   // row
   w_plus_r_row: MultilinearPolynomial<E::Scalar>,
