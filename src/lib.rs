@@ -991,7 +991,7 @@ mod tests {
   use crate::gadgets::lookup::{less_than, Lookup, LookupTrace, LookupTraceBuilder, TableType};
   use crate::gadgets::utils::conditionally_select2;
   use crate::provider::poseidon::PoseidonConstantsCircuit;
-  use crate::spartan::lookupsnark::LookupSNARK;
+  // use crate::spartan::lookupsnark::LookupSNARK;
   use crate::spartan::math::Math;
   use crate::traits::evaluation::EvaluationEngineTrait;
   use core::fmt::Write;

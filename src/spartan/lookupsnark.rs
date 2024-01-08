@@ -87,7 +87,6 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> SimpleDigestible for VerifierKey<E
 pub struct LookupSNARK<E: Engine, EE: EvaluationEngineTrait<E>> {
   a: PhantomData<(E, EE)>,
 
-  // commitment to oracles for the inner sum-check
   comm_final_counter: CompressedCommitment<E>,
   comm_final_value: CompressedCommitment<E>,
 

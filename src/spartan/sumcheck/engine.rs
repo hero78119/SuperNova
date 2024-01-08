@@ -162,6 +162,9 @@ pub(in crate::spartan) struct MemorySumcheckInstanceV2<E: Engine> {
 
   // zero polynomial
   poly_zero: MultilinearPolynomial<E::Scalar>,
+
+  // initial claim
+  initial_claims: Option<Vec<E::Scalar>>,
 }
 
 impl<E: Engine> MemorySumcheckInstanceV2<E> {
@@ -338,13 +341,20 @@ impl<E: Engine> MemorySumcheckInstanceV2<E> {
     polys_aux: [Vec<E::Scalar>; 2],
     poly_eq: Vec<E::Scalar>,
     ts_row: Vec<E::Scalar>,
+    initial_claims: Option<Vec<E::Scalar>>,
   ) -> Self {
+    // sanity check
+    if let Some(initial_claims) = initial_claims {
+      assert!(initial_claims.len() == 3);
+    }
+
     let [t_plus_r_inv, w_plus_r_inv] = polys_oracle;
     let [t_plus_r, w_plus_r] = polys_aux;
 
     let zero = vec![E::Scalar::ZERO; poly_eq.len()];
 
     Self {
+      initial_claims,
       t_plus_r: MultilinearPolynomial::new(t_plus_r),
       w_plus_r: MultilinearPolynomial::new(w_plus_r),
       t_plus_r_inv: MultilinearPolynomial::new(t_plus_r_inv),
@@ -358,7 +368,9 @@ impl<E: Engine> MemorySumcheckInstanceV2<E> {
 
 impl<E: Engine> SumcheckEngine<E> for MemorySumcheckInstanceV2<E> {
   fn initial_claims(&self) -> Vec<E::Scalar> {
-    vec![E::Scalar::ZERO; 3]
+    self
+      .initial_claims
+      .unwrap_or_else(|| vec![E::Scalar::ZERO; 3])
   }
 
   fn degree(&self) -> usize {

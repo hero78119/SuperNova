@@ -10,7 +10,6 @@ use std::cmp::Ord;
 
 use crate::constants::NUM_CHALLENGE_BITS;
 use crate::gadgets::nonnative::util::Num;
-use crate::gadgets::utils::alloc_const;
 use crate::spartan::math::Math;
 use crate::traits::commitment::CommitmentEngineTrait;
 use crate::traits::AbsorbInROTrait;
@@ -22,6 +21,23 @@ use ff::{Field, PrimeField};
 
 use super::utils::scalar_as_base;
 use super::utils::{alloc_one, conditionally_select2, le_bits_to_num};
+use bellpepper_core::boolean::Boolean;
+
+/// alloc a field as a constant
+/// implemented refer from <https://github.com/lurk-lab/lurk-rs/blob/4335fbb3290ed1a1176e29428f7daacb47f8033d/src/circuit/gadgets/data.rs#L387-L402>
+pub fn alloc_const<F: PrimeField, CS: ConstraintSystem<F>>(mut cs: CS, val: F) -> AllocatedNum<F> {
+  let allocated = AllocatedNum::<F>::alloc_infallible(cs.namespace(|| "allocate const"), || val);
+
+  // allocated * 1 = val
+  cs.enforce(
+    || "enforce constant",
+    |lc| lc + allocated.get_variable(),
+    |lc| lc + CS::one(),
+    |_| Boolean::Constant(true).lc(CS::one(), val),
+  );
+
+  allocated
+}
 
 /// rw trace
 #[derive(Clone, Debug)]
@@ -626,7 +642,7 @@ pub fn less_than<F: PrimeField + PartialOrd, CS: ConstraintSystem<F>>(
   n_bits: usize,
 ) -> Result<AllocatedNum<F>, SynthesisError> {
   assert!(n_bits < 64, "not support n_bits {n_bits} >= 64");
-  let range = alloc_const(cs.namespace(|| "range"), F::from(1u64 << n_bits))?;
+  let range = alloc_const(cs.namespace(|| "range"), F::from(1u64 << n_bits));
   // diff = (lhs - rhs) + (if lt { range } else { 0 });
   let diff = Num::alloc(cs.namespace(|| "diff"), || {
     a.get_value()
