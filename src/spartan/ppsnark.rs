@@ -1938,13 +1938,13 @@ where
                   &fingerprint_gamma,
                   vec![
                     Box::new(NaturalNumVec::<E>::new(table_size)),
-                    Box::new(init_values.into_iter()),
+                    Box::new(init_values.clone().into_iter()),
                     // init_counter is zero vector
                   ], // t set
                   vec![
                     Box::new(NaturalNumVec::<E>::new(table_size)),
-                    Box::new(final_values.into_iter()),
-                    Box::new(final_counters.into_iter()),
+                    Box::new(final_values.clone().into_iter()),
+                    Box::new(final_counters.clone().into_iter()),
                   ], // w set
                   &const_one, // ts
                 )
@@ -1988,7 +1988,7 @@ where
             MemorySumcheckInstanceV2::new(
               mem_oracles_col[0..2].to_vec().try_into().unwrap(),
               mem_aux_col[0..2].to_vec().try_into().unwrap(),
-              poly_eq.Z,
+              poly_eq.Z.clone(),
               pk.S_repr.ts_col.clone(),
               None,
             ),
@@ -2000,7 +2000,7 @@ where
               lookup_oracles[0..2].to_vec().try_into().unwrap(),
               lookup_aux[0..2].to_vec().try_into().unwrap(),
               poly_eq.Z,
-              pk.S_repr.const_ts_lookup,
+              pk.S_repr.const_ts_lookup.clone(),
               Some(vec![read_row - write_row, 0.into(), 0.into()]),
             ),
             comm_lookup_oracles,
@@ -2319,6 +2319,8 @@ where
         comm_w_plus_r_inv_row,
         comm_t_plus_r_inv_col,
         comm_w_plus_r_inv_col,
+        comm_t_plus_r_inv_lookup,
+        comm_w_plus_r_inv_lookup,
       ]
       .as_slice(),
     );

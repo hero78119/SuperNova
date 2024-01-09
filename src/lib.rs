@@ -27,7 +27,9 @@ pub mod traits;
 
 pub mod supernova;
 
+use gadgets::lookup::Lookup;
 use once_cell::sync::OnceCell;
+use traits::snark::RelaxedR1CSSNARKTraitV2;
 
 use crate::digest::{DigestComputer, SimpleDigestible};
 use crate::{
@@ -956,6 +958,300 @@ where
   }
 }
 
+/// A type that holds the prover key for `CompressedSNARK`
+#[derive(Clone, Debug, Serialize, Deserialize, Abomonation)]
+#[serde(bound = "")]
+#[abomonation_omit_bounds]
+pub struct ProverKeyV2<E1, E2, C1, C2, S1, S2>
+where
+  E1: Engine<Base = <E2 as Engine>::Scalar>,
+  E2: Engine<Base = <E1 as Engine>::Scalar>,
+  C1: StepCircuit<E1::Scalar>,
+  C2: StepCircuit<E2::Scalar>,
+  S1: RelaxedR1CSSNARKTraitV2<E1>,
+  S2: RelaxedR1CSSNARKTrait<E2>,
+{
+  pk_primary: S1::ProverKey,
+  pk_secondary: S2::ProverKey,
+  _p: PhantomData<(C1, C2)>,
+}
+
+/// A type that holds the verifier key for `CompressedSNARK`
+#[derive(Clone, Serialize, Deserialize, Abomonation)]
+#[serde(bound = "")]
+#[abomonation_bounds(
+  where
+    E1: Engine<Base = <E2 as Engine>::Scalar>,
+    E2: Engine<Base = <E1 as Engine>::Scalar>,
+    C1: StepCircuit<E1::Scalar>,
+    C2: StepCircuit<E2::Scalar>,
+    S1: RelaxedR1CSSNARKTraitV2<E1>,
+    S2: RelaxedR1CSSNARKTrait<E2>,
+    <E1::Scalar as PrimeField>::Repr: Abomonation,
+  )]
+pub struct VerifierKeyV2<E1, E2, C1, C2, S1, S2>
+where
+  E1: Engine<Base = <E2 as Engine>::Scalar>,
+  E2: Engine<Base = <E1 as Engine>::Scalar>,
+  C1: StepCircuit<E1::Scalar>,
+  C2: StepCircuit<E2::Scalar>,
+  S1: RelaxedR1CSSNARKTraitV2<E1>,
+  S2: RelaxedR1CSSNARKTrait<E2>,
+{
+  F_arity_primary: usize,
+  F_arity_secondary: usize,
+  ro_consts_primary: ROConstants<E1>,
+  ro_consts_secondary: ROConstants<E2>,
+  #[abomonate_with(<E1::Scalar as PrimeField>::Repr)]
+  pp_digest: E1::Scalar,
+  vk_primary: S1::VerifierKey,
+  vk_secondary: S2::VerifierKey,
+  _p: PhantomData<(C1, C2)>,
+}
+
+/// A SNARK that proves the knowledge of a valid `RecursiveSNARK`
+/// and support lookup argument
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct CompressedSNARKV2<E1, E2, C1, C2, S1, S2>
+where
+  E1: Engine<Base = <E2 as Engine>::Scalar>,
+  E2: Engine<Base = <E1 as Engine>::Scalar>,
+  C1: StepCircuit<E1::Scalar>,
+  C2: StepCircuit<E2::Scalar>,
+  S1: RelaxedR1CSSNARKTraitV2<E1>,
+  S2: RelaxedR1CSSNARKTrait<E2>,
+{
+  r_U_primary: RelaxedR1CSInstance<E1>,
+  r_W_snark_primary: S1,
+
+  r_U_secondary: RelaxedR1CSInstance<E2>,
+  l_u_secondary: R1CSInstance<E2>,
+  nifs_secondary: NIFS<E2>,
+  f_W_snark_secondary: S2,
+
+  zn_primary: Vec<E1::Scalar>,
+  zn_secondary: Vec<E2::Scalar>,
+
+  _p: PhantomData<(C1, C2)>,
+}
+
+impl<E1, E2, C1, C2, S1, S2> CompressedSNARKV2<E1, E2, C1, C2, S1, S2>
+where
+  E1: Engine<Base = <E2 as Engine>::Scalar>,
+  E2: Engine<Base = <E1 as Engine>::Scalar>,
+  C1: StepCircuit<E1::Scalar>,
+  C2: StepCircuit<E2::Scalar>,
+  S1: RelaxedR1CSSNARKTraitV2<E1>,
+  S2: RelaxedR1CSSNARKTrait<E2>,
+{
+  /// Creates prover and verifier keys for `CompressedSNARK`
+  pub fn setup(
+    pp: &PublicParams<E1, E2, C1, C2>,
+    initial_table: &Lookup<E1::Scalar>,
+  ) -> Result<
+    (
+      ProverKeyV2<E1, E2, C1, C2, S1, S2>,
+      VerifierKeyV2<E1, E2, C1, C2, S1, S2>,
+    ),
+    NovaError,
+  > {
+    let (pk_primary, vk_primary) = S1::setup(
+      &pp.ck_primary,
+      &pp.circuit_shape_primary.r1cs_shape,
+      initial_table,
+    )?;
+    let (pk_secondary, vk_secondary) =
+      S2::setup(&pp.ck_secondary, &pp.circuit_shape_secondary.r1cs_shape)?;
+
+    let pk = ProverKeyV2 {
+      pk_primary,
+      pk_secondary,
+      _p: Default::default(),
+    };
+
+    let vk = VerifierKeyV2 {
+      F_arity_primary: pp.F_arity_primary,
+      F_arity_secondary: pp.F_arity_secondary,
+      ro_consts_primary: pp.ro_consts_primary.clone(),
+      ro_consts_secondary: pp.ro_consts_secondary.clone(),
+      pp_digest: pp.digest(),
+      vk_primary,
+      vk_secondary,
+      _p: Default::default(),
+    };
+
+    Ok((pk, vk))
+  }
+
+  /// Create a new `CompressedSNARK`
+  pub fn prove(
+    pp: &PublicParams<E1, E2, C1, C2>,
+    pk: &ProverKeyV2<E1, E2, C1, C2, S1, S2>,
+    recursive_snark: &RecursiveSNARK<E1, E2, C1, C2>,
+    challenges: (E1::Scalar, E1::Scalar),
+    read_row: E1::Scalar,
+    write_row: E1::Scalar,
+    initial_table: &Lookup<E1::Scalar>,
+    final_table: &Lookup<E1::Scalar>,
+  ) -> Result<Self, NovaError> {
+    // fold the secondary circuit's instance with its running instance
+    let (nifs_secondary, (f_U_secondary, f_W_secondary)) = NIFS::prove(
+      &pp.ck_secondary,
+      &pp.ro_consts_secondary,
+      &scalar_as_base::<E1>(pp.digest()),
+      &pp.circuit_shape_secondary.r1cs_shape,
+      &recursive_snark.r_U_secondary,
+      &recursive_snark.r_W_secondary,
+      &recursive_snark.l_u_secondary,
+      &recursive_snark.l_w_secondary,
+    )?;
+
+    // create SNARKs proving the knowledge of f_W_primary and f_W_secondary
+    let (r_W_snark_primary, f_W_snark_secondary) = rayon::join(
+      || {
+        S1::prove(
+          &pp.ck_primary,
+          &pk.pk_primary,
+          &pp.circuit_shape_primary.r1cs_shape,
+          &recursive_snark.r_U_primary,
+          &recursive_snark.r_W_primary,
+          challenges,
+          read_row,
+          write_row,
+          initial_table,
+          final_table,
+        )
+      },
+      || {
+        S2::prove(
+          &pp.ck_secondary,
+          &pk.pk_secondary,
+          &pp.circuit_shape_secondary.r1cs_shape,
+          &f_U_secondary,
+          &f_W_secondary,
+        )
+      },
+    );
+
+    Ok(Self {
+      r_U_primary: recursive_snark.r_U_primary.clone(),
+      r_W_snark_primary: r_W_snark_primary?,
+
+      r_U_secondary: recursive_snark.r_U_secondary.clone(),
+      l_u_secondary: recursive_snark.l_u_secondary.clone(),
+      nifs_secondary,
+      f_W_snark_secondary: f_W_snark_secondary?,
+
+      zn_primary: recursive_snark.zi_primary.clone(),
+      zn_secondary: recursive_snark.zi_secondary.clone(),
+
+      _p: Default::default(),
+    })
+  }
+
+  /// Verify the correctness of the `CompressedSNARK`
+  pub fn verify(
+    &self,
+    vk: &VerifierKeyV2<E1, E2, C1, C2, S1, S2>,
+    num_steps: usize,
+    z0_primary: &[E1::Scalar],
+    z0_secondary: &[E2::Scalar],
+    fingerprint_intermediate_gamma: E1::Scalar,
+    read_row: E1::Scalar,
+    write_row: E1::Scalar,
+    challenges: (E1::Scalar, E1::Scalar),
+  ) -> Result<(Vec<E1::Scalar>, Vec<E2::Scalar>), NovaError> {
+    // the number of steps cannot be zero
+    if num_steps == 0 {
+      return Err(NovaError::ProofVerifyError);
+    }
+
+    // check if the (relaxed) R1CS instances have two public outputs
+    if self.l_u_secondary.X.len() != 2
+      || self.r_U_primary.X.len() != 2
+      || self.r_U_secondary.X.len() != 2
+    {
+      return Err(NovaError::ProofVerifyError);
+    }
+
+    // check if the output hashes in R1CS instances point to the right running instances
+    let (hash_primary, hash_secondary) = {
+      let mut hasher = <E2 as Engine>::RO::new(
+        vk.ro_consts_secondary.clone(),
+        NUM_FE_WITHOUT_IO_FOR_CRHF + 2 * vk.F_arity_primary,
+      );
+      hasher.absorb(vk.pp_digest);
+      hasher.absorb(E1::Scalar::from(num_steps as u64));
+      for e in z0_primary {
+        hasher.absorb(*e);
+      }
+      for e in &self.zn_primary {
+        hasher.absorb(*e);
+      }
+      self.r_U_secondary.absorb_in_ro(&mut hasher);
+
+      let mut hasher2 = <E1 as Engine>::RO::new(
+        vk.ro_consts_primary.clone(),
+        NUM_FE_WITHOUT_IO_FOR_CRHF + 2 * vk.F_arity_secondary,
+      );
+      hasher2.absorb(scalar_as_base::<E1>(vk.pp_digest));
+      hasher2.absorb(E2::Scalar::from(num_steps as u64));
+      for e in z0_secondary {
+        hasher2.absorb(*e);
+      }
+      for e in &self.zn_secondary {
+        hasher2.absorb(*e);
+      }
+      self.r_U_primary.absorb_in_ro(&mut hasher2);
+
+      (
+        hasher.squeeze(NUM_HASH_BITS),
+        hasher2.squeeze(NUM_HASH_BITS),
+      )
+    };
+
+    if hash_primary != self.l_u_secondary.X[0]
+      || hash_secondary != scalar_as_base::<E2>(self.l_u_secondary.X[1])
+    {
+      return Err(NovaError::ProofVerifyError);
+    }
+
+    // fold the secondary's running instance with the last instance to get a folded instance
+    let f_U_secondary = self.nifs_secondary.verify(
+      &vk.ro_consts_secondary,
+      &scalar_as_base::<E1>(vk.pp_digest),
+      &self.r_U_secondary,
+      &self.l_u_secondary,
+    )?;
+
+    // check the satisfiability of the folded instances using
+    // SNARKs proving the knowledge of their satisfying witnesses
+    let (res_primary, res_secondary) = rayon::join(
+      || {
+        self.r_W_snark_primary.verify::<E2>(
+          &vk.vk_primary,
+          &self.r_U_primary,
+          fingerprint_intermediate_gamma,
+          read_row,
+          write_row,
+          challenges.clone(),
+        )
+      },
+      || {
+        self
+          .f_W_snark_secondary
+          .verify(&vk.vk_secondary, &f_U_secondary)
+      },
+    );
+
+    res_primary?;
+    res_secondary?;
+
+    Ok((self.zn_primary.clone(), self.zn_secondary.clone()))
+  }
+}
+
 /// Compute the circuit digest of a [StepCircuit].
 ///
 /// Note for callers: This function should be called with its performance characteristics in mind.
@@ -1748,8 +2044,11 @@ mod tests {
 
   #[test]
   fn test_ivc_rwlookup() {
+    type S1<E, EE> = spartan::ppsnark::RelaxedR1CSSNARKV2<E, EE>;
+    type S2<E, EE> = spartan::ppsnark::RelaxedR1CSSNARK<E, EE>;
     type E1 = provider::PallasEngine;
     type E2 = provider::VestaEngine;
+    type EE<E> = provider::ipa_pc::EvaluationEngine<E>;
 
     // rw lookup to serve as a non-deterministic advices.
     #[derive(Clone)]
@@ -2043,7 +2342,7 @@ mod tests {
 
     // produce public parameters
     let pp =
-      PublicParams::<E1, E2, HeapifyCircuit<E1, E2>, TrivialCircuit<<E2 as Engine>::Scalar>>::new(
+      PublicParams::<E1, E2, HeapifyCircuit<E1, E2>, TrivialCircuit<<E2 as Engine>::Scalar>>::setup(
         &circuit_primaries[0],
         &circuit_secondary,
         &*default_ck_hint(),
@@ -2117,27 +2416,36 @@ mod tests {
       "expected_intermediate_gamma != intermediate_gamma"
     );
 
-    // lookup snark prove/verify
-    let (pk, vk) = LookupSNARK::<E1, EE<_>>::setup(&pp.ck_primary, &initial_table).unwrap();
-    let snark_proof = LookupSNARK::<E1, EE<_>>::prove(
-      &pp.ck_primary,
+    // produce the prover and verifier keys for compressed snark
+    let (pk, vk) =
+      CompressedSNARKV2::<_, _, _, _, S1<E1, EE<E1>>, S2<E2, EE<E2>>>::setup(&pp, &initial_table)
+        .unwrap();
+
+    // produce a compressed SNARK
+    let res = CompressedSNARKV2::<_, _, _, _, S1<E1, EE<E1>>, S2<E2, EE<E2>>>::prove(
+      &pp,
       &pk,
+      &recursive_snark,
       (alpha, gamma),
       read_row,
       write_row,
       &initial_table,
       &final_table,
-    )
-    .unwrap();
+    );
+    assert!(res.is_ok());
+    let compressed_snark = res.unwrap();
 
-    let res = snark_proof.verify::<E2>(
+    // verify the compressed SNARK
+    let res = compressed_snark.verify(
       &vk,
+      num_steps.try_into().unwrap(),
+      &z0_primary,
+      &z0_secondary,
       expected_intermediate_gamma,
       read_row,
       write_row,
       (alpha, gamma),
     );
-    let _ = res.clone().map_err(|err| println!("{:?}", err));
-    res.unwrap()
+    assert!(res.is_ok());
   }
 }

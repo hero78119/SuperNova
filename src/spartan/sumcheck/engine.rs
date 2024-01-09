@@ -344,7 +344,7 @@ impl<E: Engine> MemorySumcheckInstanceV2<E> {
     initial_claims: Option<Vec<E::Scalar>>,
   ) -> Self {
     // sanity check
-    if let Some(initial_claims) = initial_claims {
+    if let Some(ref initial_claims) = initial_claims {
       assert!(initial_claims.len() == 3);
     }
 
@@ -370,6 +370,7 @@ impl<E: Engine> SumcheckEngine<E> for MemorySumcheckInstanceV2<E> {
   fn initial_claims(&self) -> Vec<E::Scalar> {
     self
       .initial_claims
+      .clone()
       .unwrap_or_else(|| vec![E::Scalar::ZERO; 3])
   }
 
