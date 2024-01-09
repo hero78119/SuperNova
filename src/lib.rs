@@ -179,8 +179,8 @@ where
   /// let circuit2 = TrivialCircuit::<<E2 as Engine>::Scalar>::default();
   /// // Only relevant for a SNARK using computation commitmnets, pass &(|_| 0)
   /// // or &*nova_snark::traits::snark::default_ck_hint() otherwise.
-  /// let ck_hint1 = &*SPrime::<E1>::ck_floor();
-  /// let ck_hint2 = &*SPrime::<E2>::ck_floor();
+  /// let ck_hint1 = &*SPrime::<E1, EE<_>>::ck_floor();
+  /// let ck_hint2 = &*SPrime::<E2, EE<_>>::ck_floor();
   ///
   /// let pp = PublicParams::setup(&circuit1, &circuit2, ck_hint1, ck_hint2);
   /// ```
@@ -2343,13 +2343,16 @@ mod tests {
 
     let circuit_secondary = TrivialCircuit::default();
 
+    let ck_hint1 = &*SPrime::<E1, EE<_>>::ck_floor();
+    let ck_hint2 = &*SPrime::<E2, EE<_>>::ck_floor();
+
     // produce public parameters
     let pp =
       PublicParams::<E1, E2, HeapifyCircuit<E1, E2>, TrivialCircuit<<E2 as Engine>::Scalar>>::setup(
         &circuit_primaries[0],
         &circuit_secondary,
-        &*default_ck_hint(),
-        &*default_ck_hint(),
+        ck_hint1,
+        ck_hint2,
       );
 
     // produce the prover and verifier keys for compressed snark
@@ -2407,10 +2410,10 @@ mod tests {
       zn_primary[5]
     ); // rw counter = number_of_iterated_nodes * (3r + 4w) operations
 
-    assert_eq!(pp.circuit_shape_primary.r1cs_shape.num_cons, 12599);
-    assert_eq!(pp.circuit_shape_primary.r1cs_shape.num_vars, 12607);
-    assert_eq!(pp.circuit_shape_secondary.r1cs_shape.num_cons, 10347);
-    assert_eq!(pp.circuit_shape_secondary.r1cs_shape.num_vars, 10329);
+    assert_eq!(pp.circuit_shape_primary.r1cs_shape.num_cons, 12609);
+    assert_eq!(pp.circuit_shape_primary.r1cs_shape.num_vars, 12615);
+    assert_eq!(pp.circuit_shape_secondary.r1cs_shape.num_cons, 10357);
+    assert_eq!(pp.circuit_shape_secondary.r1cs_shape.num_vars, 10337);
 
     println!("zn_primary {:?}", zn_primary);
 
@@ -2449,6 +2452,7 @@ mod tests {
       write_row,
       (alpha, gamma),
     );
+    println!("res: {:?}", res);
     assert!(res.is_ok());
   }
 }

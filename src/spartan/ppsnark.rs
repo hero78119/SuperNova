@@ -1536,6 +1536,7 @@ where
       .collect::<Vec<E::Scalar>>();
 
     let s = transcript.squeeze(b"r")?;
+    println!("prover s {:?}", s);
     let coeffs = powers::<E>(&s, claims.len());
 
     // compute the joint claim
@@ -1802,6 +1803,10 @@ where
     );
 
     transcript.absorb(b"c", &[comm_Az, comm_Bz, comm_Cz].as_slice());
+    println!(
+      "prover &[comm_Az, comm_Bz, comm_Cz] {:?}",
+      &[comm_Az, comm_Bz, comm_Cz].as_slice()
+    );
 
     // commit general table init/final value
     // padding init table/final table to same length as N
@@ -1816,12 +1821,17 @@ where
       || E::CE::commit(ck, &final_values),
       || E::CE::commit(ck, &final_counters),
     );
+    println!(
+      "prover &vec![comm_final_value, comm_final_counter] {:?}",
+      &vec![comm_final_value, comm_final_counter]
+    );
     // absorb lookup table value/counter commitment
-    transcript.absorb(b"e", &vec![comm_final_value, comm_final_counter].as_slice());
+    transcript.absorb(b"c", &vec![comm_final_value, comm_final_counter].as_slice());
 
     // number of rounds of sum-check
     let num_rounds_sc = pk.S_repr.N.log_2();
-    let tau = transcript.squeeze(b"t")?;
+    let tau: <E as Engine>::Scalar = transcript.squeeze(b"t")?;
+    println!("prover tau {:?}", tau);
     let tau_coords = PowPolynomial::new(&tau, num_rounds_sc).coordinates();
 
     // (1) send commitments to Az, Bz, and Cz along with their evaluations at tau
@@ -1856,7 +1866,7 @@ where
     // absorb the claimed evaluations into the transcript
     transcript.absorb(b"e", &eval_vec.as_slice());
     // absorb commitments to L_row and L_col in the transcript
-    transcript.absorb(b"e", &vec![comm_L_row, comm_L_col].as_slice());
+    transcript.absorb(b"c", &vec![comm_L_row, comm_L_col].as_slice());
     let comm_vec = vec![comm_Az, comm_Bz, comm_Cz];
     let poly_vec = vec![&Az, &Bz, &Cz];
     let c = transcript.squeeze(b"c")?;
@@ -1987,7 +1997,20 @@ where
           .as_slice(),
         );
 
+        println!(
+          "prover &[
+            comm_mem_oracles_row.clone(),
+            comm_mem_oracles_col.clone(),
+            comm_lookup_oracles.clone(),
+          ] {:?}",
+          &[
+            comm_mem_oracles_row.clone(),
+            comm_mem_oracles_col.clone(),
+            comm_lookup_oracles.clone(),
+          ]
+        );
         let rho = transcript.squeeze(b"r")?;
+        println!("prover rho {:?}", rho);
         let poly_eq = MultilinearPolynomial::new(PowPolynomial::new(&rho, num_rounds_sc).evals());
 
         Ok::<_, NovaError>((
@@ -2300,11 +2323,20 @@ where
       challenges,
     )?;
 
+    println!(
+      "verifier &[comm_Az, comm_Bz, comm_Cz] {:?}",
+      &[comm_Az, comm_Bz, comm_Cz].as_slice()
+    );
     transcript.absorb(b"c", &[comm_Az, comm_Bz, comm_Cz].as_slice());
     transcript.absorb(b"c", &[comm_final_value, comm_final_counter].as_slice());
 
+    println!(
+      "verify &vec![comm_final_value, comm_final_counter] {:?}",
+      &vec![comm_final_value, comm_final_counter]
+    );
     let num_rounds_sc = vk.S_comm.N.log_2();
     let tau = transcript.squeeze(b"t")?;
+    println!("verify tau {:?}", tau);
     let tau_coords = PowPolynomial::new(&tau, num_rounds_sc).coordinates();
 
     // add claims about Az, Bz, and Cz to be checked later
@@ -2318,7 +2350,7 @@ where
 
     transcript.absorb(b"e", &eval_vec.as_slice());
 
-    transcript.absorb(b"e", &vec![comm_L_row, comm_L_col].as_slice());
+    transcript.absorb(b"c", &vec![comm_L_row, comm_L_col].as_slice());
     let comm_vec = vec![comm_Az, comm_Bz, comm_Cz];
     let c = transcript.squeeze(b"c")?;
     let u: PolyEvalInstance<E> = PolyEvalInstance::batch(&comm_vec, &tau_coords, &eval_vec, &c);
@@ -2340,11 +2372,29 @@ where
       ]
       .as_slice(),
     );
+    println!(
+      "verifier &[
+        comm_mem_oracles_row.clone(),
+        comm_mem_oracles_col.clone(),
+        comm_lookup_oracles.clone(),
+      ] {:?}",
+      &vec![
+        comm_t_plus_r_inv_row,
+        comm_w_plus_r_inv_row,
+        comm_t_plus_r_inv_col,
+        comm_w_plus_r_inv_col,
+        comm_t_plus_r_inv_lookup,
+        comm_w_plus_r_inv_lookup,
+      ]
+      .as_slice()
+    );
 
     let rho = transcript.squeeze(b"r")?;
+    println!("verifier rho {:?}", rho);
 
     let num_claims = 13;
     let s = transcript.squeeze(b"r")?;
+    println!("verifier s {:?}", s);
     let coeffs = powers::<E>(&s, num_claims);
     let claim = (coeffs[7] + coeffs[8]) * claim + coeffs[10] * (read_row - write_row); // rest are zeros
 
