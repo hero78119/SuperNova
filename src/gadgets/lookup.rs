@@ -282,7 +282,7 @@ impl<E: Engine> LookupTrace<E> {
     let read_value_term = gamma.mul(cs.namespace(|| "read_value_term"), read_value)?;
     // counter_term = gamma^2 * counter
     let read_counter_term = gamma_square.mul(cs.namespace(|| "read_counter_term"), read_counter)?;
-    // new_R = R * (alpha - (addr + gamma * value + gamma^2 * counter))
+    // new_R = R + 1 / (alpha - (addr + gamma * value + gamma^2 * counter))
     let new_R = AllocatedNum::alloc(cs.namespace(|| "new_R"), || {
       prev_R
         .get_value()
@@ -291,7 +291,9 @@ impl<E: Engine> LookupTrace<E> {
         .zip(read_value_term.get_value())
         .zip(read_counter_term.get_value())
         .map(|((((R, alpha), addr), value_term), counter_term)| {
-          R * (alpha - (addr + value_term + counter_term))
+          R + (alpha - (addr + value_term + counter_term))
+            .invert()
+            .expect("invert failed due to read term is 0") // negilible probability for invert failed
         })
         .ok_or(SynthesisError::AssignmentMissing)
     })?;
@@ -302,9 +304,9 @@ impl<E: Engine> LookupTrace<E> {
       - read_counter_term.get_variable();
     cs.enforce(
       || "R update",
-      |lc| lc + prev_R.get_variable(),
+      |lc| lc + new_R.get_variable() - prev_R.get_variable(),
       |_| r_blc,
-      |lc| lc + new_R.get_variable(),
+      |lc| lc + CS::one(),
     );
 
     let alloc_num_one = alloc_one(cs.namespace(|| "one"));
@@ -350,12 +352,14 @@ impl<E: Engine> LookupTrace<E> {
         .zip(gamma_square.get_value())
         .map(
           |(((((W, alpha), addr), value_term), write_counter_term), gamma_square)| {
-            W * (alpha - (addr + value_term + write_counter_term + gamma_square))
+            W + (alpha - (addr + value_term + write_counter_term + gamma_square))
+              .invert()
+              .expect("invert failed due to write term is 0") // negilible probability for invert failed
           },
         )
         .ok_or(SynthesisError::AssignmentMissing)
     })?;
-    // new_W = W * (alpha - (addr + gamma * value + gamma^2 * counter + gamma^2)))
+    // new_W = W + 1 / (alpha - (addr + gamma * value + gamma^2 * counter))
     let mut w_blc = LinearCombination::<F>::zero();
     w_blc = w_blc + alpha.get_variable()
       - addr.get_variable()
@@ -364,15 +368,18 @@ impl<E: Engine> LookupTrace<E> {
       - gamma_square.get_variable();
     cs.enforce(
       || "W update",
-      |lc| lc + prev_W.get_variable(),
+      |lc| lc + new_W.get_variable() - prev_W.get_variable(),
       |_| w_blc,
-      |lc| lc + new_W.get_variable(),
+      |lc| lc + CS::one(),
     );
+
     let new_rw_counter = add_allocated_num(
       cs.namespace(|| "new_rw_counter"),
       &write_counter,
       &alloc_num_one,
     )?;
+
+    // update accu
     Ok((new_R, new_W, new_rw_counter))
   }
 }
@@ -558,7 +565,11 @@ impl<F: PrimeField> Lookup<F> {
     Self {
       map_aux: initial_table
         .into_iter()
-        .map(|(addr, value)| (addr, (value, F::ZERO)))
+        .enumerate()
+        .map(|(i, (addr, value))| {
+          assert!(F::from(i as u64) == addr);
+          (addr, (value, F::ZERO))
+        })
         .collect(),
       rw_counter: F::ZERO,
       table_type,
@@ -569,6 +580,19 @@ impl<F: PrimeField> Lookup<F> {
   /// table size
   pub fn table_size(&self) -> usize {
     self.map_aux.len()
+  }
+
+  /// padding
+  pub fn padding(&mut self, N: usize)
+  where
+    F: Ord,
+  {
+    assert!(self.map_aux.len() <= N);
+    (self.map_aux.len()..N).for_each(|addr| {
+      self
+        .map_aux
+        .insert(F::from(addr as u64), (F::ZERO, F::ZERO));
+    });
   }
 
   /// table values
@@ -829,8 +853,12 @@ mod test {
         .zip(addr.get_value())
         .zip(read_value.get_value())
         .map(|((((prev_R, alpha), gamma), addr), read_value)| prev_R
-          * (alpha - (addr + gamma * read_value + gamma * gamma * <E1 as Engine>::Scalar::ZERO))
-          * (alpha - (addr + gamma * read_value + gamma * gamma * <E1 as Engine>::Scalar::ONE)))
+          + (alpha - (addr + gamma * read_value + gamma * gamma * <E1 as Engine>::Scalar::ZERO))
+            .invert()
+            .unwrap()
+          + (alpha - (addr + gamma * read_value + gamma * gamma * <E1 as Engine>::Scalar::ONE))
+            .invert()
+            .unwrap())
     );
     // next_W check
     assert_eq!(
@@ -843,9 +871,13 @@ mod test {
         .zip(read_value.get_value())
         .map(|((((prev_W, alpha), gamma), addr), read_value)| {
           prev_W
-            * (alpha - (addr + gamma * read_value + gamma * gamma * (<E1 as Engine>::Scalar::ONE)))
-            * (alpha
+            + (alpha - (addr + gamma * read_value + gamma * gamma * (<E1 as Engine>::Scalar::ONE)))
+              .invert()
+              .unwrap()
+            + (alpha
               - (addr + gamma * read_value + gamma * gamma * (<E1 as Engine>::Scalar::from(2))))
+            .invert()
+            .unwrap()
         }),
     );
 
@@ -905,7 +937,6 @@ mod test {
       write_value_1.get_value().unwrap(),
     );
     let read_value = lookup_trace_builder.read(addr.get_value().unwrap());
-    // cs.namespace(|| "read_value 1"),
     assert_eq!(read_value, <E1 as Engine>::Scalar::from(101));
     let (_, mut lookup_trace) = lookup_trace_builder.snapshot::<E2>(
       ro_consts.clone(),
@@ -948,11 +979,15 @@ mod test {
         .zip(addr.get_value())
         .zip(read_value.get_value())
         .map(|((((prev_R, alpha), gamma), addr), read_value)| prev_R
-          * (alpha
+          + (alpha
             - (addr
               + gamma * <E1 as Engine>::Scalar::ZERO
               + gamma * gamma * <E1 as Engine>::Scalar::ZERO))
-          * (alpha - (addr + gamma * read_value + gamma * gamma * <E1 as Engine>::Scalar::ONE)))
+            .invert()
+            .unwrap()
+          + (alpha - (addr + gamma * read_value + gamma * gamma * <E1 as Engine>::Scalar::ONE))
+            .invert()
+            .unwrap())
     );
     // next_W check
     assert_eq!(
@@ -965,9 +1000,13 @@ mod test {
         .zip(read_value.get_value())
         .map(|((((prev_W, alpha), gamma), addr), read_value)| {
           prev_W
-            * (alpha - (addr + gamma * read_value + gamma * gamma * (<E1 as Engine>::Scalar::ONE)))
-            * (alpha
+            + (alpha - (addr + gamma * read_value + gamma * gamma * (<E1 as Engine>::Scalar::ONE)))
+              .invert()
+              .unwrap()
+            + (alpha
               - (addr + gamma * read_value + gamma * gamma * (<E1 as Engine>::Scalar::from(2))))
+            .invert()
+            .unwrap()
         }),
     );
 

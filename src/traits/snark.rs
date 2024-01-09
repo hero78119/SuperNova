@@ -91,7 +91,9 @@ pub trait RelaxedR1CSSNARKTraitV2<E: Engine>:
     ck: &CommitmentKey<E>,
     S: &R1CSShape<E>,
     initial_table: &Lookup<E::Scalar>,
-  ) -> Result<(Self::ProverKey, Self::VerifierKey), NovaError>;
+  ) -> Result<(Self::ProverKey, Self::VerifierKey), NovaError>
+  where
+    <E as Engine>::Scalar: Ord;
 
   /// Produces a new SNARK for a relaxed R1CS
   ///
@@ -104,8 +106,8 @@ pub trait RelaxedR1CSSNARKTraitV2<E: Engine>:
     challenges: (E::Scalar, E::Scalar),
     read_row: E::Scalar,
     write_row: E::Scalar,
-    initial_table: &Lookup<E::Scalar>,
-    final_table: &Lookup<E::Scalar>,
+    initial_table: Lookup<E::Scalar>,
+    final_table: Lookup<E::Scalar>,
   ) -> Result<Self, NovaError>;
 
   /// Verifies a SNARK for a relaxed R1CS

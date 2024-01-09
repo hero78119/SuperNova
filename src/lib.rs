@@ -1055,7 +1055,10 @@ where
       VerifierKeyV2<E1, E2, C1, C2, S1, S2>,
     ),
     NovaError,
-  > {
+  >
+  where
+    <E1 as Engine>::Scalar: Ord,
+  {
     let (pk_primary, vk_primary) = S1::setup(
       &pp.ck_primary,
       &pp.circuit_shape_primary.r1cs_shape,
@@ -1119,8 +1122,8 @@ where
           challenges,
           read_row,
           write_row,
-          initial_table,
-          final_table,
+          initial_table.clone(),
+          final_table.clone(),
         )
       },
       || {
@@ -2349,6 +2352,11 @@ mod tests {
         &*default_ck_hint(),
       );
 
+    // produce the prover and verifier keys for compressed snark
+    let (pk, vk) =
+      CompressedSNARKV2::<_, _, _, _, S1<E1, EE<E1>>, S2<E2, EE<E2>>>::setup(&pp, &initial_table)
+        .unwrap();
+
     let z0_primary =
       HeapifyCircuit::<E1, E2>::get_z0(&pp.ck_primary, &final_table, expected_intermediate_gamma);
 
@@ -2415,11 +2423,6 @@ mod tests {
       expected_intermediate_gamma, intermediate_gamma,
       "expected_intermediate_gamma != intermediate_gamma"
     );
-
-    // produce the prover and verifier keys for compressed snark
-    let (pk, vk) =
-      CompressedSNARKV2::<_, _, _, _, S1<E1, EE<E1>>, S2<E2, EE<E2>>>::setup(&pp, &initial_table)
-        .unwrap();
 
     // produce a compressed SNARK
     let res = CompressedSNARKV2::<_, _, _, _, S1<E1, EE<E1>>, S2<E2, EE<E2>>>::prove(

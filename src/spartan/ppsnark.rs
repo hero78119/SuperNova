@@ -1222,10 +1222,17 @@ impl<E: Engine> TranscriptReprTrait<E::GE> for R1CSShapeSparkCommitmentV2<E> {
 
 impl<E: Engine> R1CSShapeSparkReprV2<E> {
   /// represents `R1CSShape` in a Spark-friendly format amenable to memory checking
-  pub fn new(S: &R1CSShape<E>, initial_table: &Lookup<E::Scalar>) -> Self {
+  pub fn new(S: &R1CSShape<E>, initial_table: &Lookup<E::Scalar>) -> Self
+  where
+    <E as Engine>::Scalar: Ord,
+  {
     let N = {
       let total_nz = S.A.len() + S.B.len() + S.C.len();
-      max(total_nz, max(2 * S.num_vars, S.num_cons)).next_power_of_two()
+      max(
+        max(total_nz, max(2 * S.num_vars, S.num_cons)),
+        initial_table.table_size(),
+      )
+      .next_power_of_two()
     };
 
     // we make col lookup into the last entry of z, so we commit to zeros
@@ -1283,12 +1290,14 @@ impl<E: Engine> R1CSShapeSparkReprV2<E> {
         .collect::<Vec<_>>()
     };
 
+    let mut initial_table = initial_table.clone();
+    initial_table.padding(N);
     // lookup
     let init_values_lookup: Vec<_> = initial_table
       .into_iter()
       .map(|(_, (value, _))| *value)
       .collect();
-    let const_ts_lookup = vec![E::Scalar::from(1u64); init_values_lookup.len()];
+    let const_ts_lookup = vec![E::Scalar::from(1u64); N];
 
     Self {
       N,
@@ -1700,6 +1709,7 @@ impl<E: Engine, EE: EvaluationEngineTrait<E>> RelaxedR1CSSNARKTraitV2<E>
   for RelaxedR1CSSNARKV2<E, EE>
 where
   <E::Scalar as PrimeField>::Repr: Abomonation,
+  <E as Engine>::Scalar: Ord,
 {
   type ProverKey = ProverKeyV2<E, EE>;
   type VerifierKey = VerifierKeyV2<E, EE>;
@@ -1715,7 +1725,10 @@ where
     ck: &CommitmentKey<E>,
     S: &R1CSShape<E>,
     initial_table: &Lookup<E::Scalar>,
-  ) -> Result<(Self::ProverKey, Self::VerifierKey), NovaError> {
+  ) -> Result<(Self::ProverKey, Self::VerifierKey), NovaError>
+  where
+    <E as Engine>::Scalar: Ord,
+  {
     // check the provided commitment key meets minimal requirements
     if ck.length() < Self::ck_floor()(S) {
       return Err(NovaError::InvalidCommitmentKeyLength);
@@ -1753,8 +1766,8 @@ where
     challenges: (E::Scalar, E::Scalar),
     read_row: E::Scalar,
     write_row: E::Scalar,
-    initial_table: &Lookup<E::Scalar>,
-    final_table: &Lookup<E::Scalar>,
+    mut initial_table: Lookup<E::Scalar>,
+    mut final_table: Lookup<E::Scalar>,
   ) -> Result<Self, NovaError> {
     // pad the R1CSShape
     let S = S.pad();
@@ -1791,6 +1804,9 @@ where
     transcript.absorb(b"c", &[comm_Az, comm_Bz, comm_Cz].as_slice());
 
     // commit general table init/final value
+    // padding init table/final table to same length as N
+    initial_table.padding(pk.S_repr.N);
+    final_table.padding(pk.S_repr.N);
     let init_values: Vec<<E as Engine>::Scalar> = initial_table
       .into_iter()
       .map(|(_, (value, _))| *value)
